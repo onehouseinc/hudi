@@ -36,10 +36,10 @@ import org.apache.spark.sql.catalyst.{InternalRow, expressions}
 import org.apache.spark.sql.execution.datasources.{FileIndex, FileStatusCache, NoopCache, PartitionDirectory}
 import org.apache.spark.sql.hudi.{DataSkippingUtils, HoodieSqlUtils}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.unsafe.types.UTF8String
-import java.util.Properties
 
+import java.util.Properties
 import scala.collection.JavaConverters._
 import scala.collection.JavaConversions._
 import scala.collection.mutable
@@ -85,6 +85,8 @@ case class HoodieFileIndex(
   private val specifiedQueryInstant = options.get(DataSourceReadOptions.TIME_TRAVEL_AS_OF_INSTANT.key)
     .map(HoodieSqlUtils.formatQueryInstant)
 
+
+
   /**
     * Get all completeCommits.
     */
@@ -100,13 +102,32 @@ case class HoodieFileIndex(
       .dataType.asInstanceOf[StructType]
   })
 
+  private def structConvertToMap(structField : Either[StructField,StructType]) : Map[String,StructField] = {
+    structField match {
+      case Right(field) => field.fields.map(f => structConvertToMap(Left(f))).flatten.toMap
+      case Left(field) => field.dataType match {
+        case struct: StructType => structConvertToMap(Right(struct)).map {
+          case (s :String , sf:StructField)  => (field.name + "." + s , sf )
+        }
+        case _ => Map(field.name -> field)
+      }
+    }
+  }
+
   /**
    * Get the partition schema from the hoodie.properties.
    */
   private lazy val _partitionSchemaFromProperties: StructType = {
     val tableConfig = metaClient.getTableConfig
     val partitionColumns = tableConfig.getPartitionFields
-    val nameFieldMap = schema.fields.map(filed => filed.name -> filed).toMap
+//    val nameFieldMap = schema.fields.map(filed => {
+//      if(filed.dataType.typeName.equals("StructType"))
+//      filed.dataType.asInstanceOf[StructType].map(f => )
+//      filed.name -> filed
+//      structConvertToMap(filed)
+//    }).flatten.toMap
+
+    val nameFieldMap = structConvertToMap(Right(schema))
 
     if (partitionColumns.isPresent) {
       val partitionFields = partitionColumns.get().map(column =>

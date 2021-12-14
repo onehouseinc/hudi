@@ -57,6 +57,11 @@ public class TestS3EventsSource extends AbstractCloudObjectsSourceTestBase {
     super.teardown();
   }
 
+  @Test
+  public void testSchema() {
+    sparkSession.read().format("hudi").load("/Users/harshalpatil/Downloads/s3_meta_table").select("_hoodie_record_key").show(100,false);
+  }
+
   /**
    * Runs the test scenario of reading data from the source.
    *
