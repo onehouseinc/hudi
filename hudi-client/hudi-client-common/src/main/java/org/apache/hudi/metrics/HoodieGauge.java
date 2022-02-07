@@ -20,17 +20,25 @@ package org.apache.hudi.metrics;
 
 import com.codahale.metrics.Gauge;
 
+import java.util.Map;
+
 /**
  * Similar to {@link Gauge}, but metric value can be updated by {@link #setValue(T)}.
  */
 public class HoodieGauge<T> implements Gauge<T> {
   private volatile T value;
+  private Map<String, String> tags;
 
   /**
    * Create an instance with a default value.
    */
   public HoodieGauge(T value) {
     this.value = value;
+  }
+
+  public HoodieGauge(T value, Map<String, String> tags) {
+    this.value = value;
+    this.tags = tags;
   }
 
   /**
@@ -48,5 +56,9 @@ public class HoodieGauge<T> implements Gauge<T> {
   @Override
   public T getValue() {
     return value;
+  }
+
+  public Map<String, String> getTags() {
+    return tags;
   }
 }

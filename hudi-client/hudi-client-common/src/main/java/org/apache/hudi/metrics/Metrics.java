@@ -132,6 +132,18 @@ public class Metrics {
     }
   }
 
+  public static void registerGauge(String metricName, final long value, Map<String, String> tags) {
+    try {
+      MetricRegistry registry = Metrics.getInstance().getRegistry();
+      HoodieGauge guage = (HoodieGauge) registry.gauge(metricName, () -> new HoodieGauge<>(value, tags));
+      guage.setValue(value);
+    } catch (Exception e) {
+      // Here we catch all exception, so the major upsert pipeline will not be affected if the
+      // metrics system has some issues.
+      LOG.error("Failed to send metrics: ", e);
+    }
+  }
+
   public MetricRegistry getRegistry() {
     return registry;
   }

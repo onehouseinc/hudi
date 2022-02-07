@@ -18,6 +18,7 @@
 
 package org.apache.hudi.metrics;
 
+import com.google.common.collect.ImmutableMap;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.util.Option;
@@ -147,19 +148,19 @@ public class HoodieMetrics {
       long totalCompactedRecordsUpdated = metadata.getTotalCompactedRecordsUpdated();
       long totalLogFilesCompacted = metadata.getTotalLogFilesCompacted();
       long totalLogFilesSize = metadata.getTotalLogFilesSize();
-      Metrics.registerGauge(getMetricsName(actionType, "totalPartitionsWritten"), totalPartitionsWritten);
-      Metrics.registerGauge(getMetricsName(actionType, "totalFilesInsert"), totalFilesInsert);
-      Metrics.registerGauge(getMetricsName(actionType, "totalFilesUpdate"), totalFilesUpdate);
-      Metrics.registerGauge(getMetricsName(actionType, "totalRecordsWritten"), totalRecordsWritten);
-      Metrics.registerGauge(getMetricsName(actionType, "totalUpdateRecordsWritten"), totalUpdateRecordsWritten);
-      Metrics.registerGauge(getMetricsName(actionType, "totalInsertRecordsWritten"), totalInsertRecordsWritten);
-      Metrics.registerGauge(getMetricsName(actionType, "totalBytesWritten"), totalBytesWritten);
-      Metrics.registerGauge(getMetricsName(actionType, "totalScanTime"), totalTimeTakenByScanner);
-      Metrics.registerGauge(getMetricsName(actionType, "totalCreateTime"), totalTimeTakenForInsert);
-      Metrics.registerGauge(getMetricsName(actionType, "totalUpsertTime"), totalTimeTakenForUpsert);
-      Metrics.registerGauge(getMetricsName(actionType, "totalCompactedRecordsUpdated"), totalCompactedRecordsUpdated);
-      Metrics.registerGauge(getMetricsName(actionType, "totalLogFilesCompacted"), totalLogFilesCompacted);
-      Metrics.registerGauge(getMetricsName(actionType, "totalLogFilesSize"), totalLogFilesSize);
+      Metrics.registerGauge(getMetricsName(actionType, "totalPartitionsWritten"), totalPartitionsWritten, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalFilesInsert"), totalFilesInsert, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalFilesUpdate"), totalFilesUpdate, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalRecordsWritten"), totalRecordsWritten, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalUpdateRecordsWritten"), totalUpdateRecordsWritten, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalInsertRecordsWritten"), totalInsertRecordsWritten, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalBytesWritten"), totalBytesWritten, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalScanTime"), totalTimeTakenByScanner, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalCreateTime"), totalTimeTakenForInsert, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalUpsertTime"), totalTimeTakenForUpsert, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalCompactedRecordsUpdated"), totalCompactedRecordsUpdated, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalLogFilesCompacted"), totalLogFilesCompacted, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
+      Metrics.registerGauge(getMetricsName(actionType, "totalLogFilesSize"), totalLogFilesSize, ImmutableMap.of("commitTime", String.valueOf(commitEpochTimeInMs)));
     }
   }
 
@@ -215,6 +216,7 @@ public class HoodieMetrics {
   }
 
   String getMetricsName(String action, String metric) {
+    // ohds_deltacommit_totalRecordsWritten
     return config == null ? null : String.format("%s.%s.%s", config.getMetricReporterMetricsNamePrefix(), action, metric);
   }
 
