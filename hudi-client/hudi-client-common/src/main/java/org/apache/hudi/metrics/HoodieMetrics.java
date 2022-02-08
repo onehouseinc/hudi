@@ -216,7 +216,6 @@ public class HoodieMetrics {
   }
 
   String getMetricsName(String action, String metric) {
-    // ohds_deltacommit_totalRecordsWritten
     return config == null ? null : String.format("%s.%s.%s", config.getMetricReporterMetricsNamePrefix(), action, metric);
   }
 
