@@ -68,6 +68,7 @@ public class HoodieMultiTableDeltaStreamer {
   private Set<String> successTables;
   private Set<String> failedTables;
 
+  // ToDo support concurrency
   public HoodieMultiTableDeltaStreamer(Config config, JavaSparkContext jssc) throws IOException {
     this.tableExecutionContexts = new ArrayList<>();
     this.successTables = new HashSet<>();
