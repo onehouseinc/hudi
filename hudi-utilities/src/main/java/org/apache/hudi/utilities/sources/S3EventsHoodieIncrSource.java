@@ -33,7 +33,9 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
+import org.apache.pulsar.shade.com.google.gson.Gson;
 import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.sql.DataFrameReader;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -41,7 +43,9 @@ import org.apache.spark.sql.SparkSession;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.apache.hudi.utilities.sources.HoodieIncrSource.Config.DEFAULT_NUM_INSTANTS_PER_FETCH;
 import static org.apache.hudi.utilities.sources.HoodieIncrSource.Config.DEFAULT_READ_LATEST_INSTANT_ON_MISSING_CKPT;
@@ -50,13 +54,14 @@ import static org.apache.hudi.utilities.sources.HoodieIncrSource.Config.HOODIE_S
 import static org.apache.hudi.utilities.sources.HoodieIncrSource.Config.NUM_INSTANTS_PER_FETCH;
 import static org.apache.hudi.utilities.sources.HoodieIncrSource.Config.READ_LATEST_INSTANT_ON_MISSING_CKPT;
 import static org.apache.hudi.utilities.sources.HoodieIncrSource.Config.SOURCE_FILE_FORMAT;
-
+import static org.apache.hudi.utilities.sources.HoodieIncrSource.Config.SPARK_DATASOURCE_OPTIONS;
 /**
  * This source will use the S3 events meta information from hoodie table generate by {@link S3EventsSource}.
  */
 public class S3EventsHoodieIncrSource extends HoodieIncrSource {
 
   private static final Logger LOG = LogManager.getLogger(S3EventsHoodieIncrSource.class);
+  private static final Gson gson = new Gson();
 
   static class Config {
     // control whether we do existence check for files before consuming them
@@ -174,7 +179,13 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
     }
     Option<Dataset<Row>> dataset = Option.empty();
     if (!cloudFiles.isEmpty()) {
-      dataset = Option.of(sparkSession.read().format(fileFormat).load(cloudFiles.toArray(new String[0])));
+      DataFrameReader dataFrameReader = sparkSession.read().format(fileFormat);
+      Map<String, String> arguments = new HashMap<>();
+      if (!StringUtils.isNullOrEmpty(props.getString(HoodieIncrSource.Config.SPARK_DATASOURCE_OPTIONS, null))) {
+        Map<String,String> sparkOptionsMaps = gson.fromJson(props.getString(SPARK_DATASOURCE_OPTIONS), arguments.getClass());
+        dataFrameReader = dataFrameReader.options(sparkOptionsMaps);
+      }
+      dataset = Option.of(dataFrameReader.load(cloudFiles.toArray(new String[0])));
     }
     return Pair.of(dataset, queryTypeAndInstantEndpts.getRight().getRight());
   }
