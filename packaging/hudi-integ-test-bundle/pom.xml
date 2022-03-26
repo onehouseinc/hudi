@@ -120,6 +120,7 @@
                   <include>org.eclipse.jetty.websocket:websocket-client</include>
                   <include>org.eclipse.jetty:jetty-client</include>
                   <include>org.eclipse.jetty.websocket:websocket-servlet</include>
+                 <include>org.apache.spark:spark-avro_${scala.binary.version}</include>
                   <include>org.mortbay.jetty:jetty</include>
                   <include>org.mortbay.jetty:jetty-util</include>
 
@@ -460,6 +461,13 @@
       <groupId>org.apache.hudi</groupId>
       <artifactId>${hudi.spark.common.module}</artifactId>
       <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-avro_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>compile</scope>
     </dependency>
 
     <dependency>
