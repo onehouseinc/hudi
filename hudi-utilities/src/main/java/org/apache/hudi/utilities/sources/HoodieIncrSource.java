@@ -88,6 +88,13 @@ public class HoodieIncrSource extends RowSource {
      * {@value #SOURCE_FILE_FORMAT} is passed to the reader while loading dataset. Default value is parquet.
      */
     static final String SOURCE_FILE_FORMAT = "hoodie.deltastreamer.source.hoodieincr.file.format";
+    /**
+     *{@value #SPARK_DATASOURCE_OPTIONS} is json string, passed to the reader while loading dataset.
+     * Example delta streamer conf
+     * - --hoodie-conf hoodie.deltastreamer.source.hoodieincr.spark.datasource.options={"header":"true","encoding":"UTF-8"}
+     *
+     */
+    static final String SPARK_DATASOURCE_OPTIONS = "hoodie.deltastreamer.source.hoodieincr.spark.datasource.options";
     static final String DEFAULT_SOURCE_FILE_FORMAT = "parquet";
   }
 
