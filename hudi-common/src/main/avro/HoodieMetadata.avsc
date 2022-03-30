@@ -133,7 +133,11 @@
                                 "long",
                                 "float",
                                 "double",
-                                "bytes"
+                                "bytes",
+                                // NOTE: While Parquet encodes strings as bytes, we encode it as native Avro primitive
+                                //       type primarily for convenience to avoid unnecessary manual encoding.
+                                //       Both Parquet and Avro encode strings as an UTF8
+                                "string"
                             ]
                         },
                         {
@@ -152,7 +156,11 @@
                                 "long",
                                 "float",
                                 "double",
-                                "bytes"
+                                "bytes",
+                                // NOTE: While Parquet encodes strings as bytes, we encode it as native Avro primitive
+                                //       type primarily for convenience to avoid unnecessary manual encoding.
+                                //       Both Parquet and Avro encode strings as an UTF8
+                                "string"
                             ]
                         },
                         {
