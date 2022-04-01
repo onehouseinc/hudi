@@ -283,7 +283,8 @@
                                         }
                                     ]
                                 }
-                            ]
+                            ],
+                            "default": null
                         },
                         {
                             "doc": "Maximum value in the range. Based on user data table schema, we can convert it to appropriate type",
@@ -307,7 +308,8 @@
                                 "org.apache.hudi.avro.model.DecimalWrapper",
                                 "org.apache.hudi.avro.model.TimeMicrosWrapper",
                                 "org.apache.hudi.avro.model.TimestampMicrosWrapper"
-                            ]
+                            ],
+                            "default": null
                         },
                         {
                             "doc": "Total count of values",
