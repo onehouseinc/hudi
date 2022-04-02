@@ -120,9 +120,14 @@ public class HoodieBloomIndex extends HoodieIndex<Object, Object> {
     // Step 2: Load all involved files as <Partition, filename> pairs
     List<Pair<String, BloomIndexFileInfo>> fileInfoList;
     if (config.getBloomIndexPruneByRanges()) {
-      fileInfoList = (config.isMetadataColumnStatsIndexEnabled()
-          ? loadColumnRangesFromMetaIndex(affectedPartitionPathList, context, hoodieTable)
-          : loadColumnRangesFromFiles(affectedPartitionPathList, context, hoodieTable));
+      // TODO(HUDI-3776) we can't rely only column stats since it's state might not be complete
+      //        at any given moment; instead we should use it on the basis of best effort,
+      //        and for those files that are not found in ColStats we should list from
+      //        those directly
+      // fileInfoList = (config.isMetadataColumnStatsIndexEnabled()
+      //     ? loadColumnRangesFromMetaIndex(affectedPartitionPathList, context, hoodieTable)
+      //     : loadColumnRangesFromFiles(affectedPartitionPathList, context, hoodieTable));
+      fileInfoList = loadColumnRangesFromFiles(affectedPartitionPathList, context, hoodieTable);
     } else {
       fileInfoList = getFileInfoForLatestBaseFiles(affectedPartitionPathList, context, hoodieTable);
     }
