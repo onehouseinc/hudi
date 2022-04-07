@@ -302,6 +302,7 @@ public class DeltaSync implements Serializable {
       // compactor
       if (null == writeClient) {
         this.schemaProvider = srcRecordsWithCkpt.getKey();
+        LOG.warn("SSS Setting up write client for the first time " + schemaProvider.getTargetSchema().toString());
         // Setup HoodieWriteClient and compaction now that we decided on schema
         setupWriteClient();
       } else {
@@ -326,8 +327,11 @@ public class DeltaSync implements Serializable {
         }
       }
 
+      LOG.warn("SSS writing to sync. target schema " + schemaProvider.getTargetSchema().toString());
       result = writeToSink(srcRecordsWithCkpt.getRight().getRight(),
           srcRecordsWithCkpt.getRight().getLeft(), metrics, overallTimerContext);
+    } else {
+      LOG.warn("SSS Scehma provider is null");
     }
 
     metrics.updateDeltaStreamerSyncMetrics(System.currentTimeMillis());
@@ -804,7 +808,10 @@ public class DeltaSync implements Serializable {
             .withProps(props);
 
     if (schema != null) {
+      LOG.warn("SSS write client instantiation. Setting right schema : " + schema.toString());
       builder.withSchema(schema.toString());
+    } else {
+      LOG.warn("SSS write client instantiation. not setting any schema ");
     }
 
     HoodieWriteConfig config = builder.build();

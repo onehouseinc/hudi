@@ -25,6 +25,7 @@ import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.model.IOType;
+import org.apache.hudi.common.table.TableSchemaResolver;
 import org.apache.hudi.common.util.HoodieTimer;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.ReflectionUtils;
@@ -111,6 +112,17 @@ public abstract class HoodieWriteHandle<T extends HoodieRecordPayload, I, K, O> 
     super(config, Option.of(instantTime), hoodieTable);
     this.partitionPath = partitionPath;
     this.fileId = fileId;
+    LOG.warn("SSS Overridden Schema " + (overriddenSchema.isPresent() ? overriddenSchema.get().toString() : " null"));
+    if (!overriddenSchema.isPresent()) {
+      LOG.warn("SSS Over ridden schema not present. hence fetching from config " + config.getSchema());
+      TableSchemaResolver tableSchemaResolver = new TableSchemaResolver(hoodieTable.getMetaClient());
+      try {
+        Schema schema = tableSchemaResolver.getTableAvroSchema();
+        LOG.warn("SSS Potential fix is to set schema from table schema resolver " + schema.toString());
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
+    }
     this.tableSchema = overriddenSchema.orElseGet(() -> getSpecifiedTableSchema(config));
     this.tableSchemaWithMetaFields = HoodieAvroUtils.addMetadataFields(tableSchema, config.allowOperationMetadataField());
     this.writeSchema = overriddenSchema.orElseGet(() -> getWriteSchema(config));
