@@ -370,6 +370,10 @@
                   <pattern>com.google.api.</pattern>
                   <shadedPattern>org.apache.hudibundle.com.google.api.</shadedPattern>
                 </relocation>
+                <relocation>
+                  <pattern>com.google.common.</pattern>
+                  <shadedPattern>org.apache.hudibundle.com.google.common.</shadedPattern>
+                </relocation>
                 <!-- end pramod -->
 
               </relocations>
@@ -531,16 +535,32 @@
     <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
-      <version>31.1-jre</version>
+<!--      <version>31.1-jre</version>-->
     </dependency>
     <dependency>
       <groupId>com.google.api</groupId>
       <artifactId>api-common</artifactId>
-      <version>2.2.1</version>
     </dependency>
     <!-- end pramod -->
 
   </dependencies>
+
+  <!--start pramod -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>31.1-jre</version>
+      </dependency>
+    <dependency>
+      <groupId>com.google.api</groupId>
+      <artifactId>api-common</artifactId>
+      <version>2.2.1</version>
+    </dependency>	      
+    </dependencies>
+  </dependencyManagement>
+  <!-- end pramod -->	  
 
   <profiles>
     <profile>
