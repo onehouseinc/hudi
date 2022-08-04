@@ -48,10 +48,12 @@
     <module>packaging/hudi-datahub-sync-bundle</module>
     <module>packaging/hudi-hive-sync-bundle</module>
     <module>packaging/hudi-spark-bundle</module>
+    <!-- Commented in an attempt to get around Guava Preconditions.checkArguments method conflict -->
 	    <!--<module>packaging/hudi-presto-bundle</module> -->
     <module>packaging/hudi-utilities-bundle</module>
     <module>packaging/hudi-utilities-slim-bundle</module>
     <module>packaging/hudi-timeline-server-bundle</module>
+    <!-- Commented in an attempt to get around Guava Preconditions.checkArguments method conflict -->
 	    <!-- <module>packaging/hudi-trino-bundle</module> -->
     <module>hudi-examples</module>
     <module>hudi-flink-datasource</module>
@@ -491,6 +493,10 @@
             </execution>
           </executions>
         </plugin>
+
+        <!-- Temp hack to be able to exec a single Java class in multi-module maven project.
+        Ref: https://stackoverflow.com/a/26448447/700045running-a-specific-maven-plugin-goal-from-the-command-line-in-a-sub-module-of-a/26448447#26448447
+        -->
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>exec-maven-plugin</artifactId>
