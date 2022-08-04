@@ -11,8 +11,8 @@ import java.util.concurrent.TimeoutException;
 public class PubsubEventsSource {
 
         public static void main(String... args) throws Exception {
-            String projectId = "infra-dev-358110";
-            String subscriptionId = "gcs-obj-1-sub";
+            String projectId = "redacted";
+            String subscriptionId = "redacted";
             subscribeAsyncExample(projectId, subscriptionId);
         }
 
