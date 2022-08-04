@@ -168,8 +168,8 @@
 
 	          <!-- pramod: Adding cloud pubsub and its dependencies manually to be included for Shading.
 	           In an attempt to get this working on local docker env -->
-                        <include>com.google.cloud:google-cloud-pubsub</include>
-                        <include>com.google.api.grpc:proto-google-cloud-pubsub-v1</include>
+            <include>com.google.cloud:google-cloud-pubsub</include>
+            <include>com.google.api.grpc:proto-google-cloud-pubsub-v1</include>
 			<include>io.grpc:grpc-api</include>
 			<include>io.grpc:grpc-context</include>
 			<include>io.grpc:grpc-stub</include>
@@ -360,6 +360,18 @@
                   <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.util.MetricSampleQuantiles
                   </shadedPattern>
                 </relocation>
+
+                <!-- start pramod -->
+                <relocation>
+                  <pattern>com.google.common.base.</pattern>
+                  <shadedPattern>org.apache.hudibundle.com.google.common.base.</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.google.api.</pattern>
+                  <shadedPattern>org.apache.hudibundle.com.google.api.</shadedPattern>
+                </relocation>
+                <!-- end pramod -->
+
               </relocations>
               <filters>
                 <filter>
@@ -513,15 +525,20 @@
       <version>${zk-curator.version}</version>
     </dependency>
 
-  <!-- pramod : Following template in trino and presto -->
+  <!-- start pramod : Following template in trino and presto -->
     <!--Guava needs to be shaded because HBase 1.2.3 depends on an earlier guava version i.e 12.0.1 and hits runtime
     issues with the guava version present in utilities runtime-->
     <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
-      <version>12.0.1</version>
-      <scope>provided</scope>
-    </dependency>	  
+      <version>31.1-jre</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.api</groupId>
+      <artifactId>api-common</artifactId>
+      <version>2.2.1</version>
+    </dependency>
+    <!-- end pramod -->
 
   </dependencies>
 
