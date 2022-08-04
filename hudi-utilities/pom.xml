@@ -60,6 +60,13 @@
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
       </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <configuration>
+          <skip>false</skip>
+        </configuration>
+      </plugin>
     </plugins>
 
     <resources>
@@ -381,6 +388,12 @@
       <groupId>${hive.groupid}</groupId>
       <artifactId>hive-service</artifactId>
       <version>${hive.version}</version>
+    </dependency>
+
+    <!-- Google Cloud Platform (GCP) -->
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>google-cloud-pubsub</artifactId>
     </dependency>
 
     <!-- Hoodie - Test -->

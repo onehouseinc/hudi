@@ -48,11 +48,11 @@
     <module>packaging/hudi-datahub-sync-bundle</module>
     <module>packaging/hudi-hive-sync-bundle</module>
     <module>packaging/hudi-spark-bundle</module>
-    <module>packaging/hudi-presto-bundle</module>
+	    <!--<module>packaging/hudi-presto-bundle</module> -->
     <module>packaging/hudi-utilities-bundle</module>
     <module>packaging/hudi-utilities-slim-bundle</module>
     <module>packaging/hudi-timeline-server-bundle</module>
-    <module>packaging/hudi-trino-bundle</module>
+	    <!-- <module>packaging/hudi-trino-bundle</module> -->
     <module>hudi-examples</module>
     <module>hudi-flink-datasource</module>
     <module>hudi-kafka-connect</module>
@@ -490,6 +490,16 @@
               </goals>
             </execution>
           </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>exec-maven-plugin</artifactId>
+          <version>1.3.2</version>
+          <configuration>
+            <skip>true</skip>
+<!--            <mainClass>none</mainClass>-->
+            <executable>java</executable>
+          </configuration>
         </plugin>
       </plugins>
     </pluginManagement>
@@ -1146,6 +1156,14 @@
         <artifactId>log4j-core</artifactId>
         <version>${log4j.test.version}</version>
         <scope>test</scope>
+      </dependency>
+
+      <dependency>
+        <groupId>com.google.cloud</groupId>
+        <artifactId>libraries-bom</artifactId>
+        <version>26.0.0</version>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
 
     </dependencies>
