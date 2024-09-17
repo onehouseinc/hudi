@@ -61,7 +61,7 @@ public class PushGatewayMetricsReporter extends MetricsReporter {
 
   @Override
   public void report() {
-    pushGatewayReporter.report(null, null, null, null, null);
+    pushGatewayReporter.report();
   }
 
   @Override

@@ -29,12 +29,14 @@ import com.codahale.metrics.ScheduledReporter;
 import io.prometheus.client.CollectorRegistry;
 import io.prometheus.client.dropwizard.DropwizardExports;
 import io.prometheus.client.exporter.PushGateway;
+import org.apache.hudi.metrics.HoodieGauge;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 
 import java.io.IOException;
-import java.util.SortedMap;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 public class PushGatewayReporter extends ScheduledReporter {
 
@@ -68,6 +70,37 @@ public class PushGatewayReporter extends ScheduledReporter {
                      SortedMap<String, Histogram> histograms,
                      SortedMap<String, Meter> meters,
                      SortedMap<String, Timer> timers) {
+
+    if (gauges != null) {
+      Map<String, String> groupingKey = null;
+      String commitTime = null;
+      for (Map.Entry<String, Gauge> entry : gauges.entrySet()) {
+        String key = entry.getKey();
+        Gauge value = entry.getValue();
+        HoodieGauge hoodieGauge = (HoodieGauge) value;
+        List<String> commitTimeTags = new ArrayList<String>(hoodieGauge.getTags().values());
+        if (commitTimeTags.size() == 1) {
+          if (commitTime == null) {
+            commitTime = commitTimeTags.get(0);
+            groupingKey = hoodieGauge.getTags();
+          } else if (Long.parseLong(commitTime) < Long.parseLong(commitTimeTags.get(0))) {
+            commitTime = commitTimeTags.get(0);
+            groupingKey = hoodieGauge.getTags();
+          }
+        }
+      }
+      try {
+        if (groupingKey != null) {
+          pushGateway.pushAdd(collectorRegistry, jobName, groupingKey);
+        } else {
+          pushGateway.pushAdd(collectorRegistry, jobName);
+        }
+      } catch (IOException e) {
+        LOG.warn("Can't push monitoring information to pushGateway", e);
+      }
+      return;
+    }
+
     try {
       pushGateway.pushAdd(collectorRegistry, jobName);
     } catch (IOException e) {
