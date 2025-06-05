@@ -18,8 +18,7 @@
 
 package org.apache.hudi.metadata;
 
-import org.apache.avro.Schema;
-
+import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.log.HoodieMergedLogRecordScanner;
@@ -28,6 +27,8 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.ExternalSpillableMap;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.StoragePath;
+
+import org.apache.avro.Schema;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -76,16 +77,18 @@ public class HoodieMetadataLogRecordReader implements Closeable {
   }
 
   @SuppressWarnings("unchecked")
-  public Map<String, HoodieRecord<HoodieMetadataPayload>> getRecordsByKeyPrefixes(List<String> sortedKeyPrefixes) {
+  public Map<String, HoodieRecord<HoodieMetadataPayload>> getRecordsByKeyPrefixes(HoodieData<String> sortedKeyPrefixes) {
     if (sortedKeyPrefixes.isEmpty()) {
       return Collections.emptyMap();
     }
 
+    List<String> sortedKeyPrefixesList = sortedKeyPrefixes.collectAsList();
+
     // NOTE: Locking is necessary since we're accessing [[HoodieMetadataLogRecordReader]]
     //       materialized state, to make sure there's no concurrent access
     synchronized (this) {
-      logRecordScanner.scanByKeyPrefixes(sortedKeyPrefixes);
-      Predicate<String> p = createPrefixMatchingPredicate(sortedKeyPrefixes);
+      logRecordScanner.scanByKeyPrefixes(sortedKeyPrefixesList);
+      Predicate<String> p = createPrefixMatchingPredicate(sortedKeyPrefixesList);
       return logRecordScanner.getRecords().entrySet()
           .stream()
           .filter(r -> r != null && p.test(r.getKey()))

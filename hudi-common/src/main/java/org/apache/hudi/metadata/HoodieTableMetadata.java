@@ -270,13 +270,13 @@ public interface HoodieTableMetadata extends Serializable, AutoCloseable {
    * Returns the location of record keys which are found in the record index.
    * Records that are not found are ignored and wont be part of map object that is returned.
    */
-  Map<String, HoodieRecordGlobalLocation> readRecordIndex(List<String> recordKeys);
+  Map<String, HoodieRecordGlobalLocation> readRecordIndex(HoodieData<String> recordKeys);
 
   /**
    * Returns the location of records which the provided secondary keys maps to.
    * Records that are not found are ignored and won't be part of map object that is returned.
    */
-  Map<String, HoodieRecordGlobalLocation> readSecondaryIndex(List<String> secondaryKeys, String partitionName);
+  Map<String, HoodieRecordGlobalLocation> readSecondaryIndex(HoodieData<String> secondaryKeys, String partitionName);
 
   /**
    * Fetch records by key prefixes. Key prefix passed is expected to match the same prefix as stored in Metadata table partitions. For eg, in case of col stats partition,
@@ -286,7 +286,7 @@ public interface HoodieTableMetadata extends Serializable, AutoCloseable {
    * @param partitionName partition name in metadata table where the records are looked up for.
    * @return {@link HoodieData} of {@link HoodieRecord}s with records matching the passed in key prefixes.
    */
-  HoodieData<HoodieRecord<HoodieMetadataPayload>> getRecordsByKeyPrefixes(List<String> keyPrefixes,
+  HoodieData<HoodieRecord<HoodieMetadataPayload>> getRecordsByKeyPrefixes(HoodieData<String> keyPrefixes,
                                                                           String partitionName,
                                                                           boolean shouldLoadInMemory);
 
