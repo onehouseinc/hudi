@@ -19,26 +19,25 @@
 package org.apache.hudi.util;
 
 import org.apache.hudi.client.HoodieFlinkWriteClient;
+import org.apache.hudi.client.transaction.TransactionManager;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.TableSchemaResolver;
-import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
+import org.apache.hudi.common.table.timeline.HoodieInstantTimeGenerator;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.configuration.FlinkOptions;
-import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.metadata.HoodieTableMetadata;
 import org.apache.hudi.sink.compact.FlinkCompactionConfig;
 import org.apache.hudi.table.HoodieFlinkTable;
 
 import org.apache.avro.Schema;
 import org.apache.flink.configuration.Configuration;
-import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.Locale;
 
 /**
@@ -51,13 +50,11 @@ public class CompactionUtil {
   /**
    * Schedules a new compaction instant.
    *
-   * @param metaClient          The metadata client
    * @param writeClient         The write client
    * @param deltaTimeCompaction Whether the compaction is trigger by elapsed delta time
    * @param committed           Whether the last instant was committed successfully
    */
   public static void scheduleCompaction(
-      HoodieTableMetaClient metaClient,
       HoodieFlinkWriteClient<?> writeClient,
       boolean deltaTimeCompaction,
       boolean committed) {
@@ -66,32 +63,7 @@ public class CompactionUtil {
     } else if (deltaTimeCompaction) {
       // if there are no new commits and the compaction trigger strategy is based on elapsed delta time,
       // schedules the compaction anyway.
-      metaClient.reloadActiveTimeline();
-      Option<String> compactionInstantTime = CompactionUtil.getCompactionInstantTime(metaClient);
-      if (compactionInstantTime.isPresent()) {
-        writeClient.scheduleCompactionAtInstant(compactionInstantTime.get(), Option.empty());
-      }
-    }
-  }
-
-  /**
-   * Gets compaction Instant time.
-   */
-  public static Option<String> getCompactionInstantTime(HoodieTableMetaClient metaClient) {
-    Option<HoodieInstant> firstPendingInstant = metaClient.getCommitsTimeline()
-        .filterPendingExcludingCompaction().firstInstant();
-    Option<HoodieInstant> lastCompleteInstant = metaClient.getActiveTimeline().getWriteTimeline()
-        .filterCompletedAndCompactionInstants().lastInstant();
-    if (firstPendingInstant.isPresent() && lastCompleteInstant.isPresent()) {
-      String firstPendingTimestamp = firstPendingInstant.get().getTimestamp();
-      String lastCompleteTimestamp = lastCompleteInstant.get().getTimestamp();
-      // Committed and pending compaction instants should have strictly lower timestamps
-      return StreamerUtil.medianInstantTime(firstPendingTimestamp, lastCompleteTimestamp);
-    } else if (!lastCompleteInstant.isPresent()) {
-      LOG.info("No instants to schedule the compaction plan");
-      return Option.empty();
-    } else {
-      return Option.of(HoodieActiveTimeline.createNewInstantTime());
+      writeClient.scheduleCompaction(Option.empty());
     }
   }
 
@@ -122,7 +94,7 @@ public class CompactionUtil {
   /**
    * Sets up the preCombine field into the given configuration {@code conf}
    * through reading from the hoodie table metadata.
-   *
+   * <p>
    * This value is non-null as compaction can only be performed on MOR tables.
    * Of which, MOR tables will have non-null precombine fields.
    *
@@ -130,7 +102,23 @@ public class CompactionUtil {
    */
   public static void setPreCombineField(Configuration conf, HoodieTableMetaClient metaClient) {
     String preCombineField = metaClient.getTableConfig().getPreCombineField();
-    conf.setString(FlinkOptions.PRECOMBINE_FIELD, preCombineField);
+    if (preCombineField != null) {
+      conf.setString(FlinkOptions.PRECOMBINE_FIELD, preCombineField);
+    }
+  }
+
+  /**
+   * Sets up the partition field into the given configuration {@code conf}
+   * through reading from the hoodie table metadata.
+   *
+   * @param conf The configuration
+   * @param metaClient The meta client
+   */
+  public static void setPartitionField(Configuration conf, HoodieTableMetaClient metaClient) {
+    Option<String[]> partitionKeys = metaClient.getTableConfig().getPartitionFields();
+    if (partitionKeys.isPresent()) {
+      conf.set(FlinkOptions.PARTITION_PATH_FIELD, String.join(",", partitionKeys.get()));
+    }
   }
 
   /**
@@ -139,6 +127,7 @@ public class CompactionUtil {
    * <p>We can improve the code if the changelog mode is set up as table config.
    *
    * @param conf The configuration
+   * @param metaClient The meta client
    */
   public static void inferChangelogMode(Configuration conf, HoodieTableMetaClient metaClient) throws Exception {
     TableSchemaResolver tableSchemaResolver = new TableSchemaResolver(metaClient);
@@ -149,29 +138,25 @@ public class CompactionUtil {
   }
 
   /**
-   * Cleans the metadata file for given instant {@code instant}.
+   * Infers the metadata config based on the existence of metadata folder.
+   *
+   * <p>We can improve the code if the metadata config is set up as table config.
+   *
+   * @param conf The configuration
+   * @param metaClient The meta client
    */
-  public static void cleanInstant(HoodieTableMetaClient metaClient, HoodieInstant instant) {
-    Path commitFilePath = new Path(metaClient.getMetaAuxiliaryPath(), instant.getFileName());
-    try {
-      if (metaClient.getFs().exists(commitFilePath)) {
-        boolean deleted = metaClient.getFs().delete(commitFilePath, false);
-        if (deleted) {
-          LOG.info("Removed instant " + instant);
-        } else {
-          throw new HoodieIOException("Could not delete instant " + instant);
-        }
-      }
-    } catch (IOException e) {
-      throw new HoodieIOException("Could not remove requested commit " + commitFilePath, e);
+  public static void inferMetadataConf(Configuration conf, HoodieTableMetaClient metaClient) {
+    String path = HoodieTableMetadata.getMetadataTableBasePath(conf.getString(FlinkOptions.PATH));
+    if (!StreamerUtil.tableExists(path, (org.apache.hadoop.conf.Configuration) metaClient.getStorageConf().unwrap())) {
+      conf.setBoolean(FlinkOptions.METADATA_ENABLED, false);
     }
   }
 
-  public static void rollbackCompaction(HoodieFlinkTable<?> table, String instantTime) {
-    HoodieInstant inflightInstant = HoodieTimeline.getCompactionInflightInstant(instantTime);
+  public static void rollbackCompaction(HoodieFlinkTable<?> table, String instantTime, TransactionManager transactionManager) {
+    HoodieInstant inflightInstant = table.getInstantGenerator().getCompactionInflightInstant(instantTime);
     if (table.getMetaClient().reloadActiveTimeline().filterPendingCompactionTimeline().containsInstant(inflightInstant)) {
       LOG.warn("Rollback failed compaction instant: [" + instantTime + "]");
-      table.rollbackInflightCompaction(inflightInstant);
+      table.rollbackInflightCompaction(inflightInstant, transactionManager);
     }
   }
 
@@ -180,14 +165,15 @@ public class CompactionUtil {
    *
    * @param table The hoodie table
    */
-  public static void rollbackCompaction(HoodieFlinkTable<?> table) {
+  public static void rollbackCompaction(HoodieFlinkTable<?> table, HoodieFlinkWriteClient writeClient) {
     HoodieTimeline inflightCompactionTimeline = table.getActiveTimeline()
         .filterPendingCompactionTimeline()
         .filter(instant ->
             instant.getState() == HoodieInstant.State.INFLIGHT);
     inflightCompactionTimeline.getInstants().forEach(inflightInstant -> {
       LOG.info("Rollback the inflight compaction instant: " + inflightInstant + " for failover");
-      table.rollbackInflightCompaction(inflightInstant);
+      table.rollbackInflightCompaction(inflightInstant, commitToRollback -> writeClient.getTableServiceClient().getPendingRollbackInfo(table.getMetaClient(), commitToRollback, false),
+          writeClient.getTransactionManager());
       table.getMetaClient().reloadActiveTimeline();
     });
   }
@@ -206,11 +192,13 @@ public class CompactionUtil {
             instant.getState() == HoodieInstant.State.INFLIGHT).firstInstant();
     if (earliestInflight.isPresent()) {
       HoodieInstant instant = earliestInflight.get();
-      String currentTime = HoodieActiveTimeline.createNewInstantTime();
+      String currentTime = HoodieInstantTimeGenerator.getCurrentInstantTimeStr();
       int timeout = conf.getInteger(FlinkOptions.COMPACTION_TIMEOUT_SECONDS);
-      if (StreamerUtil.instantTimeDiffSeconds(currentTime, instant.getTimestamp()) >= timeout) {
+      if (StreamerUtil.instantTimeDiffSeconds(currentTime, instant.requestedTime()) >= timeout) {
         LOG.info("Rollback the inflight compaction instant: " + instant + " for timeout(" + timeout + "s)");
-        table.rollbackInflightCompaction(instant);
+        try (TransactionManager transactionManager = new TransactionManager(table.getConfig(), table.getStorage())) {
+          table.rollbackInflightCompaction(instant, transactionManager);
+        }
         table.getMetaClient().reloadActiveTimeline();
       }
     }

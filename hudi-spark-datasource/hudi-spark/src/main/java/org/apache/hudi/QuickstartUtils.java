@@ -18,7 +18,6 @@
 
 package org.apache.hudi;
 
-import org.apache.hudi.avro.HoodieAvroUtils;
 import org.apache.hudi.common.model.HoodieAvroRecord;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
@@ -33,7 +32,9 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.spark.sql.Row;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,7 +65,7 @@ public class QuickstartUtils {
         + "{\"name\":\"fare\",\"type\": \"double\"}]}";
     static Schema avroSchema = new Schema.Parser().parse(TRIP_EXAMPLE_SCHEMA);
 
-    private static Random rand = new Random(46474747);
+    private static final Random RAND = new Random(46474747);
 
     private final Map<Integer, HoodieKey> existingKeys;
     private final String[] partitionPaths;
@@ -89,7 +90,7 @@ public class QuickstartUtils {
       int stringLength = 3;
       StringBuilder buffer = new StringBuilder(stringLength);
       for (int i = 0; i < stringLength; i++) {
-        int randomLimitedInt = leftLimit + (int) (rand.nextFloat() * (rightLimit - leftLimit + 1));
+        int randomLimitedInt = leftLimit + (int) (RAND.nextFloat() * (rightLimit - leftLimit + 1));
         buffer.append((char) randomLimitedInt);
       }
       return buffer.toString();
@@ -100,17 +101,17 @@ public class QuickstartUtils {
     }
 
     public static GenericRecord generateGenericRecord(String rowKey, String riderName, String driverName,
-        long timestamp) {
+                                                      long timestamp) {
       GenericRecord rec = new GenericData.Record(avroSchema);
       rec.put("uuid", rowKey);
       rec.put("ts", timestamp);
       rec.put("rider", riderName);
       rec.put("driver", driverName);
-      rec.put("begin_lat", rand.nextDouble());
-      rec.put("begin_lon", rand.nextDouble());
-      rec.put("end_lat", rand.nextDouble());
-      rec.put("end_lon", rand.nextDouble());
-      rec.put("fare", rand.nextDouble() * 100);
+      rec.put("begin_lat", RAND.nextDouble());
+      rec.put("begin_lon", RAND.nextDouble());
+      rec.put("end_lat", RAND.nextDouble());
+      rec.put("end_lon", RAND.nextDouble());
+      rec.put("fare", RAND.nextDouble() * 100);
       return rec;
     }
 
@@ -135,7 +136,7 @@ public class QuickstartUtils {
      */
     private static long generateRangeRandomTimestamp(int daysTillNow) {
       long maxIntervalMillis = daysTillNow * 24 * 60 * 60 * 1000L;
-      return System.currentTimeMillis() - (long)(Math.random() * maxIntervalMillis);
+      return System.currentTimeMillis() - (long) (Math.random() * maxIntervalMillis);
     }
 
     /**
@@ -145,7 +146,7 @@ public class QuickstartUtils {
       int currSize = getNumExistingKeys();
 
       return IntStream.range(0, n).boxed().map(i -> {
-        String partitionPath = partitionPaths[rand.nextInt(partitionPaths.length)];
+        String partitionPath = partitionPaths[RAND.nextInt(partitionPaths.length)];
         HoodieKey key = new HoodieKey(UUID.randomUUID().toString(), partitionPath);
         existingKeys.put(currSize + i, key);
         numExistingKeys++;
@@ -183,7 +184,31 @@ public class QuickstartUtils {
       String randomString = generateRandomString();
       return IntStream.range(0, n).boxed().map(x -> {
         try {
-          return generateUpdateRecord(existingKeys.get(rand.nextInt(numExistingKeys)), randomString);
+          return generateUpdateRecord(existingKeys.get(RAND.nextInt(numExistingKeys)), randomString);
+        } catch (IOException e) {
+          throw new HoodieIOException(e.getMessage(), e);
+        }
+      }).collect(Collectors.toList());
+    }
+
+    /**
+     * Generates new updates, one for each of the keys above
+     * list
+     *
+     * @param n Number of updates (must be no more than number of existing keys)
+     * @return list of hoodie record updates
+     */
+    public List<HoodieRecord> generateUniqueUpdates(Integer n) {
+      if (numExistingKeys < n) {
+        throw new HoodieException("Data must have been written before performing the update operation");
+      }
+      List<Integer> keys = IntStream.range(0, numExistingKeys).boxed()
+          .collect(Collectors.toCollection(ArrayList::new));
+      Collections.shuffle(keys);
+      String randomString = generateRandomString();
+      return IntStream.range(0, n).boxed().map(x -> {
+        try {
+          return generateUpdateRecord(existingKeys.get(keys.get(x)), randomString);
         } catch (IOException e) {
           throw new HoodieIOException(e.getMessage(), e);
         }
@@ -200,9 +225,9 @@ public class QuickstartUtils {
       // if row.length() == 2, then the record contains "uuid" and "partitionpath" fields, otherwise,
       // another field "ts" is available
       return rows.stream().map(row -> row.length() == 2
-          ? convertToString(row.getAs("uuid"), row.getAs("partitionpath"), null) :
-          convertToString(row.getAs("uuid"), row.getAs("partitionpath"), row.getAs("ts"))
-      ).filter(os -> os.isPresent()).map(os -> os.get())
+              ? convertToString(row.getAs("uuid"), row.getAs("partitionpath"), null) :
+              convertToString(row.getAs("uuid"), row.getAs("partitionpath"), row.getAs("ts"))
+          ).filter(os -> os.isPresent()).map(os -> os.get())
           .collect(Collectors.toList());
     }
 
@@ -213,8 +238,8 @@ public class QuickstartUtils {
 
   private static Option<String> convertToString(HoodieRecord record) {
     try {
-      String str = HoodieAvroUtils
-          .bytesToAvro(((OverwriteWithLatestAvroPayload) record.getData()).recordBytes, DataGenerator.avroSchema)
+      String str = ((OverwriteWithLatestAvroPayload) record.getData())
+          .getInsertValue(DataGenerator.avroSchema)
           .toString();
       str = "{" + str.substring(str.indexOf("\"ts\":"));
       return Option.of(str.replaceAll("}", ", \"partitionpath\": \"" + record.getPartitionPath() + "\"}"));
@@ -224,13 +249,12 @@ public class QuickstartUtils {
   }
 
   private static Option<String> convertToString(String uuid, String partitionPath, Long ts) {
-    StringBuffer stringBuffer = new StringBuffer();
-    stringBuffer.append("{");
-    stringBuffer.append("\"ts\": \"" + (ts == null ? "0.0" : ts) + "\",");
-    stringBuffer.append("\"uuid\": \"" + uuid + "\",");
-    stringBuffer.append("\"partitionpath\": \"" + partitionPath + "\"");
-    stringBuffer.append("}");
-    return Option.of(stringBuffer.toString());
+    String stringBuffer = "{"
+        + "\"ts\": \"" + (ts == null ? "0.0" : ts) + "\","
+        + "\"uuid\": \"" + uuid + "\","
+        + "\"partitionpath\": \"" + partitionPath + "\""
+        + "}";
+    return Option.of(stringBuffer);
   }
 
   public static List<String> convertToStringList(List<HoodieRecord> records) {

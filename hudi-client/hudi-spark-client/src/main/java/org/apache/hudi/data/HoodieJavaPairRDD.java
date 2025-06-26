@@ -28,9 +28,13 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.ImmutablePair;
 import org.apache.hudi.common.util.collection.Pair;
 
+import org.apache.spark.Partitioner;
 import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.Optional;
+import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.storage.StorageLevel;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -122,6 +126,15 @@ public class HoodieJavaPairRDD<K, V> implements HoodiePairData<K, V> {
   }
 
   @Override
+  public <W> HoodiePairData<K, W> mapValues(SerializableFunction<V, W> func) {
+    return HoodieJavaPairRDD.of(pairRDDData.mapValues(func::apply));
+  }
+
+  public <W> HoodiePairData<K, W> flatMapValues(SerializableFunction<V, Iterator<W>> func) {
+    return HoodieJavaPairRDD.of(pairRDDData.flatMapValues(iter -> CloseableIteratorListener.addListener(func.apply(iter))));
+  }
+
+  @Override
   public <L, W> HoodiePairData<L, W> mapToPair(SerializablePairFunction<Pair<K, V>, L, W> mapToPairFunc) {
     return HoodieJavaPairRDD.of(pairRDDData.mapToPair(pair -> {
       Pair<L, W> newPair = mapToPairFunc.call(new ImmutablePair<>(pair._1, pair._2));
@@ -138,7 +151,40 @@ public class HoodieJavaPairRDD<K, V> implements HoodiePairData<K, V> {
   }
 
   @Override
+  public HoodiePairData<K, V> union(HoodiePairData<K, V> other) {
+    return HoodieJavaPairRDD.of(pairRDDData.union(HoodieJavaPairRDD.getJavaPairRDD(other)));
+  }
+
+  @Override
+  public <W> HoodiePairData<K, Pair<V, W>> join(HoodiePairData<K, W> other) {
+    return HoodieJavaPairRDD.of(JavaPairRDD.fromJavaRDD(
+        pairRDDData.join(HoodieJavaPairRDD.getJavaPairRDD(other))
+            .map(tuple -> new Tuple2<>(tuple._1,
+                new ImmutablePair<>(tuple._2._1, tuple._2._2)))));
+  }
+
+  @Override
   public List<Pair<K, V>> collectAsList() {
     return pairRDDData.map(t -> Pair.of(t._1, t._2)).collect();
+  }
+
+  @Override
+  public int deduceNumPartitions() {
+    // for source rdd, the partitioner is None
+    final Optional<Partitioner> partitioner = pairRDDData.partitioner();
+    if (partitioner.isPresent()) {
+      int partPartitions = partitioner.get().numPartitions();
+      if (partPartitions > 0) {
+        return partPartitions;
+      }
+    }
+
+    if (SQLConf.get().contains(SQLConf.SHUFFLE_PARTITIONS().key())) {
+      return Integer.parseInt(SQLConf.get().getConfString(SQLConf.SHUFFLE_PARTITIONS().key()));
+    } else if (pairRDDData.context().conf().contains("spark.default.parallelism")) {
+      return pairRDDData.context().defaultParallelism();
+    } else {
+      return pairRDDData.getNumPartitions();
+    }
   }
 }

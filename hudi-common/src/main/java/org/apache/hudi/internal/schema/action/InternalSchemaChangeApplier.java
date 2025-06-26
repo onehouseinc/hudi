@@ -28,7 +28,7 @@ import java.util.Arrays;
  * Manage schema change for HoodieWriteClient.
  */
 public class InternalSchemaChangeApplier {
-  private InternalSchema latestSchema;
+  private final InternalSchema latestSchema;
 
   public InternalSchemaChangeApplier(InternalSchema latestSchema) {
     this.latestSchema = latestSchema;
@@ -51,7 +51,8 @@ public class InternalSchemaChangeApplier {
       TableChange.ColumnPositionChange.ColumnPositionType positionType) {
     TableChanges.ColumnAddChange add = TableChanges.ColumnAddChange.get(latestSchema);
     String parentName = TableChangesHelper.getParentName(colName);
-    add.addColumns(parentName, colName, colType, doc);
+    String leafName = TableChangesHelper.getLeafName(colName);
+    add.addColumns(parentName, leafName, colType, doc);
     if (positionType != null) {
       switch (positionType) {
         case NO_OPERATION:
@@ -74,7 +75,7 @@ public class InternalSchemaChangeApplier {
           throw new IllegalArgumentException(String.format("only support first/before/after but found: %s", positionType));
       }
     } else {
-      throw new IllegalArgumentException(String.format("positionType should be specified"));
+      throw new IllegalArgumentException("positionType should be specified");
     }
     return SchemaChangeUtils.applyTableChanges2Schema(latestSchema, add);
   }

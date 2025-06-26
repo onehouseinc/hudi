@@ -19,15 +19,18 @@
 
 package org.apache.hudi.cli.functional;
 
-import org.apache.hudi.client.HoodieReadClient;
-import org.apache.hudi.client.SparkRDDWriteClient;
+import org.apache.hudi.client.SparkRDDReadClient;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
+import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.testutils.HoodieClientTestUtils;
 import org.apache.hudi.testutils.providers.SparkProvider;
 import org.apache.hudi.timeline.service.TimelineService;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.spark.HoodieSparkKryoRegistrar$;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.SQLContext;
@@ -35,12 +38,12 @@ import org.apache.spark.sql.SparkSession;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.shell.Bootstrap;
-import org.springframework.shell.core.JLineShellComponent;
 
 import java.nio.file.Paths;
 
 public class CLIFunctionalTestHarness implements SparkProvider {
+
+  protected static final String BASE_FILE_EXTENSION = HoodieTableConfig.BASE_FILE_FORMAT.defaultValue().getFileExtension();
 
   protected static int timelineServicePort =
       FileSystemViewStorageConfig.REMOTE_PORT_NUM.defaultValue();
@@ -49,7 +52,7 @@ public class CLIFunctionalTestHarness implements SparkProvider {
   private static transient SparkSession spark;
   private static transient SQLContext sqlContext;
   private static transient JavaSparkContext jsc;
-  private static transient JLineShellComponent shell;
+
   /**
    * An indicator of the initialization status.
    */
@@ -81,10 +84,6 @@ public class CLIFunctionalTestHarness implements SparkProvider {
     return context;
   }
 
-  public JLineShellComponent shell() {
-    return shell;
-  }
-
   public String tableName() {
     return tableName("_test_table");
   }
@@ -97,22 +96,21 @@ public class CLIFunctionalTestHarness implements SparkProvider {
     return Paths.get(basePath(), tableName).toString();
   }
 
-  public Configuration hadoopConf() {
-    return jsc().hadoopConfiguration();
+  public StorageConfiguration<Configuration> storageConf() {
+    return HadoopFSUtils.getStorageConfWithCopy(jsc().hadoopConfiguration());
   }
 
   @BeforeEach
   public synchronized void runBeforeEach() {
-    initialized = spark != null && shell != null;
+    initialized = spark != null;
     if (!initialized) {
       SparkConf sparkConf = conf();
-      SparkRDDWriteClient.registerClasses(sparkConf);
-      HoodieReadClient.addHoodieSupport(sparkConf);
+      HoodieSparkKryoRegistrar$.MODULE$.register(sparkConf);
+      SparkRDDReadClient.addHoodieSupport(sparkConf);
       spark = SparkSession.builder().config(sparkConf).getOrCreate();
       sqlContext = spark.sqlContext();
       jsc = new JavaSparkContext(spark.sparkContext());
       context = new HoodieSparkEngineContext(jsc);
-      shell = new Bootstrap().getJLineShellComponent();
       timelineService = HoodieClientTestUtils.initTimelineService(
           context, basePath(), incrementTimelineServicePortToUse());
       timelineServicePort = timelineService.getServerPort();
@@ -124,10 +122,6 @@ public class CLIFunctionalTestHarness implements SparkProvider {
     if (spark != null) {
       spark.close();
       spark = null;
-    }
-    if (shell != null) {
-      shell.stop();
-      shell = null;
     }
     if (timelineService != null) {
       timelineService.close();

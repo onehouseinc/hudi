@@ -18,9 +18,15 @@
 
 package org.apache.hudi.common.model;
 
+import org.apache.hudi.avro.model.HoodieMetadataColumnStats;
+import org.apache.hudi.common.util.ValidationUtils;
+
 import javax.annotation.Nullable;
+
 import java.io.Serializable;
 import java.util.Objects;
+
+import static org.apache.hudi.avro.HoodieAvroUtils.unwrapAvroValueWrapper;
 
 /**
  * Hoodie metadata for the column range of data stored in columnar format (like Parquet)
@@ -143,9 +149,67 @@ public class HoodieColumnRangeMetadata<T extends Comparable> implements Serializ
     return new HoodieColumnRangeMetadata<>(filePath, columnName, minValue, maxValue, nullCount, valueCount, totalSize, totalUncompressedSize);
   }
 
+  /**
+   * Converts instance of {@link HoodieMetadataColumnStats} to {@link HoodieColumnRangeMetadata}
+   */
+  public static HoodieColumnRangeMetadata<Comparable> fromColumnStats(HoodieMetadataColumnStats columnStats) {
+    return HoodieColumnRangeMetadata.<Comparable>create(
+        columnStats.getFileName(),
+        columnStats.getColumnName(),
+        unwrapAvroValueWrapper(columnStats.getMinValue()), // misses for special handling.
+        unwrapAvroValueWrapper(columnStats.getMaxValue()), // misses for special handling.
+        columnStats.getNullCount(),
+        columnStats.getValueCount(),
+        columnStats.getTotalSize(),
+        columnStats.getTotalUncompressedSize());
+  }
+
   @SuppressWarnings("rawtype")
   public static HoodieColumnRangeMetadata<Comparable> stub(String filePath,
                                                            String columnName) {
     return new HoodieColumnRangeMetadata<>(filePath, columnName, null, null, -1, -1, -1, -1);
+  }
+
+  /**
+   * Merges the given two column range metadata.
+   */
+  public static <T extends Comparable<T>> HoodieColumnRangeMetadata<T> merge(
+      HoodieColumnRangeMetadata<T> left,
+      HoodieColumnRangeMetadata<T> right) {
+    if (left == null || right == null) {
+      return left == null ? right : left;
+    }
+
+    ValidationUtils.checkArgument(left.getColumnName().equals(right.getColumnName()),
+        "Column names should be the same for merging column ranges");
+    String filePath = left.getFilePath();
+    String columnName = left.getColumnName();
+    T min = minVal(left.getMinValue(), right.getMinValue());
+    T max = maxVal(left.getMaxValue(), right.getMaxValue());
+    long nullCount = left.getNullCount() + right.getNullCount();
+    long valueCount = left.getValueCount() + right.getValueCount();
+    long totalSize = left.getTotalSize() + right.getTotalSize();
+    long totalUncompressedSize = left.getTotalUncompressedSize() + right.getTotalUncompressedSize();
+    return create(filePath, columnName, min, max, nullCount, valueCount, totalSize, totalUncompressedSize);
+  }
+
+  private static <T extends Comparable<T>> T minVal(T val1, T val2) {
+    if (val1 == null) {
+      return val2;
+    }
+    if (val2 == null) {
+      return val1;
+    }
+    return val1.compareTo(val2) < 0 ? val1 : val2;
+  }
+
+  private static <T extends Comparable<T>> T maxVal(T val1, T val2) {
+    if (val1 == null) {
+      return val2;
+    }
+    if (val2 == null) {
+      return val1;
+    }
+    return val1.compareTo(val2) > 0 ? val1 : val2;
   }
 }

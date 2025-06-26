@@ -17,10 +17,10 @@
 
 package org.apache.hudi.sink.utils;
 
-import org.apache.hudi.adapter.StreamingRuntimeContextAdapter;
-
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.state.KeyedStateStore;
+import org.apache.flink.metrics.groups.OperatorMetricGroup;
+import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
@@ -31,18 +31,21 @@ import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
 import org.apache.flink.streaming.runtime.tasks.TestProcessingTimeService;
 
 import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Mock {@link StreamingRuntimeContext} to use in tests.
  *
  * <p>NOTE: Adapted from Apache Flink, the MockStreamOperator is modified to support MapState.
  */
-public class MockStreamingRuntimeContext extends StreamingRuntimeContextAdapter {
+public class MockStreamingRuntimeContext extends StreamingRuntimeContext {
 
   private final boolean isCheckpointingEnabled;
 
   private final int numParallelSubtasks;
   private final int subtaskIndex;
+
+  private int attemptNumber;
 
   public MockStreamingRuntimeContext(
       boolean isCheckpointingEnabled,
@@ -66,6 +69,7 @@ public class MockStreamingRuntimeContext extends StreamingRuntimeContextAdapter 
     this.isCheckpointingEnabled = isCheckpointingEnabled;
     this.numParallelSubtasks = numParallelSubtasks;
     this.subtaskIndex = subtaskIndex;
+    this.attemptNumber = 0;
   }
 
   @Override
@@ -83,12 +87,22 @@ public class MockStreamingRuntimeContext extends StreamingRuntimeContextAdapter 
     return numParallelSubtasks;
   }
 
+  @Override
+  public int getAttemptNumber() {
+    return this.attemptNumber;
+  }
+
+  public void setAttemptNumber(int attemptNumber) {
+    this.attemptNumber = attemptNumber;
+  }
+
   private static class MockStreamOperator extends AbstractStreamOperator<Integer> {
     private static final long serialVersionUID = -1153976702711944427L;
 
     private transient TestProcessingTimeService testProcessingTimeService;
 
-    private transient MockOperatorStateStore mockOperatorStateStore;
+    private transient Object currentKey;
+    private final transient Map<Object, MockKeyedStateStore> mockKeyedStateStoreMap = new HashMap<>();
 
     @Override
     public ExecutionConfig getExecutionConfig() {
@@ -109,11 +123,18 @@ public class MockStreamingRuntimeContext extends StreamingRuntimeContextAdapter 
     }
 
     @Override
-    public KeyedStateStore getKeyedStateStore() {
-      if (mockOperatorStateStore == null) {
-        mockOperatorStateStore = new MockOperatorStateStore();
-      }
-      return mockOperatorStateStore;
+    public void setCurrentKey(Object key) {
+      this.currentKey = key;
     }
+
+    @Override
+    public KeyedStateStore getKeyedStateStore() {
+      return currentKey != null ? mockKeyedStateStoreMap.computeIfAbsent(currentKey, k -> new MockKeyedStateStore()) : null;
+    }
+  }
+
+  @Override
+  public OperatorMetricGroup getMetricGroup() {
+    return UnregisteredMetricsGroup.createOperatorMetricGroup();
   }
 }

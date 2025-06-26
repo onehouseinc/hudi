@@ -18,21 +18,30 @@
 package org.apache.hudi
 
 import org.apache.hudi.ColumnStatsIndexSupport.composeIndexSchema
-import org.apache.hudi.testutils.HoodieClientTestBase
-import org.apache.spark.sql.catalyst.expressions.{Expression, Not}
+import org.apache.hudi.testutils.HoodieSparkClientTestBase
+
+import org.apache.spark.sql.{Column, Row, SparkSession}
+import org.apache.spark.sql.HoodieCatalystExpressionUtils.resolveExpr
+import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
+import org.apache.spark.sql.catalyst.encoders.DummyExpressionHolder
+import org.apache.spark.sql.catalyst.expressions.{Expression, InSet, Not}
+import org.apache.spark.sql.catalyst.optimizer.OptimizeIn
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
+import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.functions.{col, lower}
 import org.apache.spark.sql.hudi.DataSkippingUtils
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.{Column, HoodieCatalystExpressionUtils, Row, SparkSession}
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.Arguments.arguments
 import org.junit.jupiter.params.provider.{Arguments, MethodSource}
+import org.junit.jupiter.params.provider.Arguments.arguments
 
 import java.sql.Timestamp
+
 import scala.collection.JavaConverters._
+import scala.collection.immutable.HashSet
 
 // NOTE: Only A, B columns are indexed
 case class IndexRow(fileName: String,
@@ -41,23 +50,21 @@ case class IndexRow(fileName: String,
                     // Corresponding A column is LongType
                     A_minValue: Long = -1,
                     A_maxValue: Long = -1,
-                    A_nullCount: Long = -1,
+                    A_nullCount: java.lang.Long = null,
 
                     // Corresponding B column is StringType
                     B_minValue: String = null,
                     B_maxValue: String = null,
-                    B_nullCount: Long = -1,
+                    B_nullCount: java.lang.Long = null,
 
                     // Corresponding B column is TimestampType
                     C_minValue: Timestamp = null,
                     C_maxValue: Timestamp = null,
-                    C_nullCount: Long = -1) {
+                    C_nullCount: java.lang.Long = null) {
   def toRow: Row = Row(productIterator.toSeq: _*)
 }
 
-class TestDataSkippingUtils extends HoodieClientTestBase with SparkAdapterSupport {
-
-  val exprUtils: HoodieCatalystExpressionUtils = sparkAdapter.getCatalystExpressionUtils
+class TestDataSkippingUtils extends HoodieSparkClientTestBase with SparkAdapterSupport {
 
   var spark: SparkSession = _
 
@@ -78,42 +85,50 @@ class TestDataSkippingUtils extends HoodieClientTestBase with SparkAdapterSuppor
       )
     )
 
-  val indexSchema: StructType = composeIndexSchema(indexedCols, sourceTableSchema)
+  val (indexSchema: StructType, targetIndexedColumns:  Seq[String]) = composeIndexSchema(indexedCols, indexedCols, sourceTableSchema)
 
   @ParameterizedTest
-  @MethodSource(
-    Array(
-      "testBasicLookupFilterExpressionsSource",
-      "testAdvancedLookupFilterExpressionsSource",
-      "testCompositeFilterExpressionsSource"
-    ))
-  def testLookupFilterExpressions(sourceExpr: String, input: Seq[IndexRow], output: Seq[String]): Unit = {
+  @MethodSource(Array(
+    "testBasicLookupFilterExpressionsSource",
+    "testAdvancedLookupFilterExpressionsSource",
+    "testCompositeFilterExpressionsSource",
+    "testSupportedAndUnsupportedDataSkippingColumnsSource"
+  ))
+  def testLookupFilterExpressions(sourceFilterExprStr: String, input: Seq[IndexRow], expectedOutput: Seq[String]): Unit = {
     // We have to fix the timezone to make sure all date-bound utilities output
     // is consistent with the fixtures
     spark.sqlContext.setConf(SESSION_LOCAL_TIMEZONE.key, "UTC")
 
-    val resolvedExpr: Expression = exprUtils.resolveExpr(spark, sourceExpr, sourceTableSchema)
-    val lookupFilter = DataSkippingUtils.translateIntoColumnStatsIndexFilterExpr(resolvedExpr, indexSchema)
+    val resolvedFilterExpr: Expression = resolveExpr(spark, sourceFilterExprStr, sourceTableSchema)
+    val optimizedExpr = optimize(resolvedFilterExpr)
+    val rows: Seq[String] = applyFilterExpr(optimizedExpr, input)
 
-    val indexDf = spark.createDataFrame(input.map(_.toRow).asJava, indexSchema)
+    assertEquals(expectedOutput, rows)
+  }
 
-    val rows = indexDf.where(new Column(lookupFilter))
-      .select("fileName")
-      .collect()
-      .map(_.getString(0))
-      .toSeq
+  @ParameterizedTest
+  @MethodSource(Array(
+    "testMiscLookupFilterExpressionsSource"
+  ))
+  def testMiscLookupFilterExpressions(filterExpr: Expression, input: Seq[IndexRow], expectedOutput: Seq[String]): Unit = {
+    // We have to fix the timezone to make sure all date-bound utilities output
+    // is consistent with the fixtures
+    spark.sqlContext.setConf(SESSION_LOCAL_TIMEZONE.key, "UTC")
 
-    assertEquals(output, rows)
+    val resolvedFilterExpr: Expression = resolveExpr(spark, filterExpr, sourceTableSchema)
+    val rows: Seq[String] = applyFilterExpr(resolvedFilterExpr, input)
+
+    assertEquals(expectedOutput, rows)
   }
 
   @ParameterizedTest
   @MethodSource(Array("testStringsLookupFilterExpressionsSource"))
   def testStringsLookupFilterExpressions(sourceExpr: Expression, input: Seq[IndexRow], output: Seq[String]): Unit = {
-    val resolvedExpr = exprUtils.resolveExpr(spark, sourceExpr, sourceTableSchema)
-    val lookupFilter = DataSkippingUtils.translateIntoColumnStatsIndexFilterExpr(resolvedExpr, indexSchema)
+    val resolvedExpr = resolveExpr(spark, sourceExpr, sourceTableSchema)
+    val lookupFilter = DataSkippingUtils.translateIntoColumnStatsIndexFilterExpr(resolvedExpr, indexedCols = indexedCols)
 
-    val spark2 = spark
-    import spark2.implicits._
+    val sparkB = spark
+    import sparkB.implicits._
 
     val indexDf = spark.createDataset(input)
 
@@ -124,6 +139,31 @@ class TestDataSkippingUtils extends HoodieClientTestBase with SparkAdapterSuppor
       .toSeq
 
     assertEquals(output, rows)
+  }
+
+
+  private def optimize(expr: Expression): Expression = {
+    val rules: Seq[Rule[LogicalPlan]] =
+      OptimizeIn ::
+        Nil
+
+    val plan: LogicalPlan = DummyExpressionHolder(Seq(expr))
+
+    rules.foldLeft(plan) {
+      case (plan, rule) => rule.apply(plan)
+    }.asInstanceOf[DummyExpressionHolder].exprs.head
+  }
+
+  private def applyFilterExpr(resolvedExpr: Expression, input: Seq[IndexRow]): Seq[String] = {
+    val lookupFilter = DataSkippingUtils.translateIntoColumnStatsIndexFilterExpr(resolvedExpr, indexedCols = indexedCols)
+
+    val indexDf = spark.createDataFrame(input.map(_.toRow).asJava, indexSchema)
+
+    indexDf.where(new Column(lookupFilter))
+      .select("fileName")
+      .collect()
+      .map(_.getString(0))
+      .toSeq
   }
 }
 
@@ -157,6 +197,55 @@ object TestDataSkippingUtils {
           IndexRow("file_4", valueCount = 1, B_minValue = "ABC123", B_maxValue = "ABC345", B_nullCount = 0) // all strings start w/ "ABC" (after upper)
         ),
         Seq("file_1", "file_2", "file_3"))
+    )
+  }
+
+  def testSupportedAndUnsupportedDataSkippingColumnsSource(): java.util.stream.Stream[Arguments] = {
+    java.util.stream.Stream.of(
+      arguments(
+        "A = 1 and B is not null",
+        Seq(
+          IndexRow("file_1", valueCount = 2, A_minValue = 0, A_maxValue = 1, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null),
+          IndexRow("file_2", valueCount = 2, A_minValue = 1, A_maxValue = 2, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null),
+          IndexRow("file_3", valueCount = 2, A_minValue = 2, A_maxValue = 3, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null)
+        ),
+        Seq("file_1", "file_2")
+      ),
+      arguments(
+        "B = 1 and B is not null",
+        Seq(
+          IndexRow("file_1", valueCount = 2, A_minValue = 0, A_maxValue = 1, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null),
+          IndexRow("file_2", valueCount = 2, A_minValue = 1, A_maxValue = 2, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null),
+          IndexRow("file_3", valueCount = 2, A_minValue = 2, A_maxValue = 3, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null)
+        ),
+        Seq("file_1", "file_2", "file_3")
+      ),
+      arguments(
+        "A = 1 and A is not null and B is not null and B > 2",
+        Seq(
+          IndexRow("file_1", valueCount = 2, A_minValue = 0, A_maxValue = 1, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null),
+          IndexRow("file_2", valueCount = 2, A_minValue = 1, A_maxValue = 2, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null),
+          IndexRow("file_3", valueCount = 2, A_minValue = 2, A_maxValue = 3, A_nullCount = 0, B_minValue = null, B_maxValue = null, B_nullCount = null)
+        ),
+        Seq("file_1", "file_2")
+      )
+    )
+  }
+
+  def testMiscLookupFilterExpressionsSource(): java.util.stream.Stream[Arguments] = {
+    // NOTE: Have to use [[Arrays.stream]], as Scala can't resolve properly 2 overloads for [[Stream.of]]
+    //       (for single element)
+    java.util.Arrays.stream(
+      Array(
+        arguments(
+          InSet(UnresolvedAttribute("A"), HashSet(0, 1)),
+          Seq(
+            IndexRow("file_1", valueCount = 1, 1, 2, 0),
+            IndexRow("file_2", valueCount = 1, -1, 1, 0),
+            IndexRow("file_3", valueCount = 1, -2, -1, 0)
+          ),
+          Seq("file_1", "file_2"))
+      )
     )
   }
 
@@ -287,6 +376,14 @@ object TestDataSkippingUtils {
           IndexRow("file_3", valueCount = 1, -2, -1, 0)
         ),
         Seq("file_1", "file_2")),
+      arguments(
+        s"B in (${(0 to 10).map(i => s"'a$i'").mkString(",")})",
+        Seq(
+          IndexRow("file_1", valueCount = 1, B_minValue = "a0", B_maxValue = "a10", B_nullCount = 0),
+          IndexRow("file_2", valueCount = 1, B_minValue = "b0", B_maxValue = "b10", B_nullCount = 0),
+          IndexRow("file_3", valueCount = 1, B_minValue = "a10", B_maxValue = "b20", B_nullCount = 0)
+        ),
+        Seq("file_1", "file_3")),
       arguments(
         "A not in (0, 1)",
         Seq(

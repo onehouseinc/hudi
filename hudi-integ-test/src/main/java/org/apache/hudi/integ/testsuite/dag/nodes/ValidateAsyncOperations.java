@@ -19,14 +19,12 @@
 package org.apache.hudi.integ.testsuite.dag.nodes;
 
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
-import org.apache.hudi.common.fs.FSUtils;
-import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
-import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.util.CleanerUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.ValidationUtils;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.integ.testsuite.configuration.DeltaConfig.Config;
 import org.apache.hudi.integ.testsuite.dag.ExecutionContext;
 
@@ -36,14 +34,11 @@ import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+
+import static org.apache.hudi.common.table.timeline.InstantComparison.GREATER_THAN_OR_EQUALS;
+import static org.apache.hudi.common.table.timeline.InstantComparison.compareTimestamps;
 
 /**
  * Node to validate data set sanity like total file versions retained, has cleaning happened, has archival happened, etc.
@@ -65,20 +60,20 @@ public class ValidateAsyncOperations extends DagNode<Option<String>> {
         String basePath = executionContext.getHoodieTestSuiteWriter().getCfg().targetBasePath;
 
         int maxCommitsRetained = executionContext.getHoodieTestSuiteWriter().getWriteConfig().getCleanerCommitsRetained() + 1;
-        FileSystem fs = FSUtils.getFs(basePath, executionContext.getHoodieTestSuiteWriter().getConfiguration());
+        FileSystem fs = HadoopFSUtils.getFs(basePath, executionContext.getHoodieTestSuiteWriter().getConfiguration());
         
         HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder().setBasePath(executionContext.getHoodieTestSuiteWriter().getCfg().targetBasePath)
-            .setConf(executionContext.getJsc().hadoopConfiguration()).build();
-        Option<HoodieInstant> latestCleanInstant = metaClient.getActiveTimeline().filter(instant -> instant.getAction().equals(HoodieTimeline.CLEAN_ACTION)).lastInstant();
+            .setConf(HadoopFSUtils.getStorageConfWithCopy(executionContext.getJsc().hadoopConfiguration())).build();
+        Option<HoodieInstant> latestCleanInstant = metaClient.getActiveTimeline().getCleanerTimeline().filterCompletedInstants().lastInstant();
         if (latestCleanInstant.isPresent()) {
           log.warn("Latest clean commit " + latestCleanInstant.get());
           HoodieCleanMetadata cleanMetadata = CleanerUtils.getCleanerMetadata(metaClient, latestCleanInstant.get());
           String earliestCommitToRetain = cleanMetadata.getEarliestCommitToRetain();
           log.warn("Earliest commit to retain : " + earliestCommitToRetain);
           long unCleanedInstants = metaClient.getActiveTimeline().filterCompletedInstants().filter(instant ->
-              HoodieTimeline.compareTimestamps(instant.getTimestamp(), HoodieTimeline.GREATER_THAN_OR_EQUALS, earliestCommitToRetain)).getInstants().count();
-          ValidationUtils.checkArgument(unCleanedInstants >= (maxCommitsRetained + 1), "Total uncleaned instants " + unCleanedInstants +
-              " mismatched with max commits retained " + (maxCommitsRetained + 1));
+              compareTimestamps(instant.requestedTime(), GREATER_THAN_OR_EQUALS, earliestCommitToRetain)).countInstants();
+          ValidationUtils.checkArgument(unCleanedInstants >= (maxCommitsRetained + 1), "Total uncleaned instants " + unCleanedInstants
+              + " mismatched with max commits retained " + (maxCommitsRetained + 1));
         }
 
         if (config.validateArchival() || config.validateClean()) {
@@ -87,7 +82,7 @@ public class ValidateAsyncOperations extends DagNode<Option<String>> {
           final Pattern CLEAN_FILE_PATTERN =
               Pattern.compile(".*\\.clean\\..*");
 
-          String metadataPath = executionContext.getHoodieTestSuiteWriter().getCfg().targetBasePath + "/.hoodie";
+          String metadataPath = executionContext.getHoodieTestSuiteWriter().getCfg().targetBasePath + "/.hoodie/timeline";
           FileStatus[] metaFileStatuses = fs.listStatus(new Path(metadataPath));
           boolean cleanFound = false;
           for (FileStatus fileStatus : metaFileStatuses) {
@@ -98,7 +93,7 @@ public class ValidateAsyncOperations extends DagNode<Option<String>> {
             }
           }
 
-          String archivalPath = executionContext.getHoodieTestSuiteWriter().getCfg().targetBasePath + "/.hoodie/archived";
+          String archivalPath = executionContext.getHoodieTestSuiteWriter().getCfg().targetBasePath + "/.hoodie/timeline/history";
           metaFileStatuses = fs.listStatus(new Path(archivalPath));
           boolean archFound = false;
           for (FileStatus fileStatus : metaFileStatuses) {

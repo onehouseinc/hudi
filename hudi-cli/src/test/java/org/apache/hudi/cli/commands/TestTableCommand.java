@@ -22,15 +22,19 @@ import org.apache.hudi.avro.HoodieAvroUtils;
 import org.apache.hudi.cli.HoodieCLI;
 import org.apache.hudi.cli.functional.CLIFunctionalTestHarness;
 import org.apache.hudi.cli.testutils.HoodieTestCommitMetadataGenerator;
+import org.apache.hudi.cli.testutils.ShellEvaluationResultUtil;
+import org.apache.hudi.common.config.HoodieTimeGeneratorConfig;
 import org.apache.hudi.common.fs.ConsistencyGuardConfig;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.common.table.HoodieTableVersion;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.table.timeline.versioning.TimelineLayoutVersion;
+import org.apache.hudi.common.table.timeline.TimeGeneratorType;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.storage.StoragePath;
 
 import org.apache.avro.Schema;
 import org.apache.hadoop.fs.FileSystem;
@@ -38,12 +42,13 @@ import org.apache.hadoop.fs.Path;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.springframework.shell.core.CommandResult;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.shell.Shell;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
@@ -52,6 +57,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.hudi.common.table.HoodieTableMetaClient.METAFOLDER_NAME;
+import static org.apache.hudi.common.util.StringUtils.fromUTF8Bytes;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -60,7 +66,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Test Cases for {@link TableCommand}.
  */
 @Tag("functional")
+@SpringBootTest(properties = {"spring.shell.interactive.enabled=false", "spring.shell.command.script.enabled=false"})
 public class TestTableCommand extends CLIFunctionalTestHarness {
+
+  @Autowired
+  private Shell shell;
 
   private String tableName;
   private String tablePath;
@@ -72,20 +82,19 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
    */
   @BeforeEach
   public void init() {
-    HoodieCLI.conf = hadoopConf();
+    HoodieCLI.conf = storageConf();
     tableName = tableName();
     tablePath = tablePath(tableName);
     metaPath = Paths.get(tablePath, METAFOLDER_NAME).toString();
-    archivePath = Paths.get(metaPath, HoodieTableConfig.ARCHIVELOG_FOLDER.defaultValue()).toString();
+    archivePath = Paths.get(metaPath, HoodieTableConfig.TIMELINE_HISTORY_PATH.defaultValue()).toString();
   }
 
   /**
    * Method to create a table for connect or desc.
    */
   private boolean prepareTable() {
-    CommandResult cr = shell().executeCommand(
-        "create --path " + tablePath + " --tableName " + tableName);
-    return cr.isSuccess();
+    Object result = shell.evaluate(() -> "create --path " + tablePath + " --tableName " + tableName);
+    return ShellEvaluationResultUtil.isSuccess(result);
   }
 
   /**
@@ -97,20 +106,24 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
     assertTrue(prepareTable());
 
     // Test connect with specified values
-    CommandResult cr = shell().executeCommand(
-        "connect --path " + tablePath + " --initialCheckIntervalMs 3000 "
-            + "--maxWaitIntervalMs 40000 --maxCheckIntervalMs 8");
-    assertTrue(cr.isSuccess());
+    Object result = shell.evaluate(() -> "connect --path " + tablePath + " --initialCheckIntervalMs 3000 "
+            + "--maxWaitIntervalMs 40000 --maxCheckIntervalMs 8 --maxExpectedClockSkewMs 888 --useDefaultLockProvider true");
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
     // Check specified values
     ConsistencyGuardConfig conf = HoodieCLI.consistencyGuardConfig;
     assertEquals(3000, conf.getInitialConsistencyCheckIntervalMs());
     assertEquals(40000, conf.getMaxConsistencyCheckIntervalMs());
     assertEquals(8, conf.getMaxConsistencyChecks());
+    HoodieTimeGeneratorConfig timeGeneratorConfig = HoodieCLI.timeGeneratorConfig;
+    assertEquals(tablePath, timeGeneratorConfig.getBasePath());
+    assertEquals(888L, timeGeneratorConfig.getMaxExpectedClockSkewMs());
+    assertEquals("org.apache.hudi.client.transaction.lock.InProcessLockProvider",
+        timeGeneratorConfig.getLockConfiguration().getConfig().getString(HoodieTimeGeneratorConfig.LOCK_PROVIDER_KEY));
 
     // Check default values
     assertFalse(conf.isConsistencyCheckEnabled());
-    assertEquals(new Integer(1), HoodieCLI.layoutVersion.getVersion());
+    assertEquals(TimeGeneratorType.valueOf("WAIT_TO_ADJUST_SKEW"), timeGeneratorConfig.getTimeGeneratorType());
   }
 
   /**
@@ -124,10 +137,17 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
     // Test meta
     HoodieTableMetaClient client = HoodieCLI.getTableMetaClient();
     assertEquals(archivePath, client.getArchivePath());
-    assertEquals(tablePath, client.getBasePath());
-    assertEquals(metaPath, client.getMetaPath());
+    assertEquals(tablePath, client.getBasePath().toString());
+    assertEquals(metaPath, client.getMetaPath().toString());
     assertEquals(HoodieTableType.COPY_ON_WRITE, client.getTableType());
     assertEquals(new Integer(1), client.getTimelineLayoutVersion().getVersion());
+
+    HoodieTimeGeneratorConfig timeGeneratorConfig = HoodieCLI.timeGeneratorConfig;
+    assertEquals(tablePath, timeGeneratorConfig.getBasePath());
+    assertEquals(200L, timeGeneratorConfig.getMaxExpectedClockSkewMs());
+    assertEquals("org.apache.hudi.client.transaction.lock.InProcessLockProvider",
+        timeGeneratorConfig.getLockConfiguration().getConfig().getString(HoodieTimeGeneratorConfig.LOCK_PROVIDER_KEY));
+    assertEquals(TimeGeneratorType.valueOf("WAIT_TO_ADJUST_SKEW"), timeGeneratorConfig.getTimeGeneratorType());
   }
 
   /**
@@ -136,15 +156,15 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
   @Test
   public void testCreateWithSpecifiedValues() {
     // Test create with specified values
-    CommandResult cr = shell().executeCommand(
-        "create --path " + tablePath + " --tableName " + tableName
-            + " --tableType MERGE_ON_READ --archiveLogFolder archive");
-    assertTrue(cr.isSuccess());
-    assertEquals("Metadata for table " + tableName + " loaded", cr.getResult().toString());
+    Object result = shell.evaluate(() -> "create --path " + tablePath + " --tableName " + tableName
+            + " --tableType MERGE_ON_READ --archiveLogFolder archive --tableVersion 6");
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
+    assertEquals("Metadata for table " + tableName + " loaded", result.toString());
     HoodieTableMetaClient client = HoodieCLI.getTableMetaClient();
-    assertEquals(metaPath + Path.SEPARATOR + "archive", client.getArchivePath());
-    assertEquals(tablePath, client.getBasePath());
-    assertEquals(metaPath, client.getMetaPath());
+    assertEquals(new StoragePath(metaPath, "archive"), client.getArchivePath());
+    assertEquals(tablePath, client.getBasePath().toString());
+    assertEquals(metaPath, client.getMetaPath().toString());
+    assertEquals(HoodieTableVersion.SIX, client.getTableConfig().getTableVersion());
     assertEquals(HoodieTableType.MERGE_ON_READ, client.getTableType());
   }
 
@@ -157,13 +177,13 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
     assertTrue(prepareTable());
 
     // Test desc table
-    CommandResult cr = shell().executeCommand("desc");
-    assertTrue(cr.isSuccess());
+    Object result = shell.evaluate(() -> "desc");
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
     // check table's basePath metaPath and type
-    assertTrue(cr.getResult().toString().contains(tablePath));
-    assertTrue(cr.getResult().toString().contains(metaPath));
-    assertTrue(cr.getResult().toString().contains("COPY_ON_WRITE"));
+    assertTrue(result.toString().contains(tablePath));
+    assertTrue(result.toString().contains(metaPath));
+    assertTrue(result.toString().contains("COPY_ON_WRITE"));
   }
 
   /**
@@ -180,32 +200,32 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
 
   private void testRefreshCommand(String command) throws IOException {
     // clean table matedata
-    FileSystem fs = FileSystem.get(hadoopConf());
-    fs.delete(new Path(tablePath + Path.SEPARATOR + HoodieTableMetaClient.METAFOLDER_NAME), true);
+    FileSystem fs = FileSystem.get(storageConf().unwrap());
+    fs.delete(new Path(tablePath + StoragePath.SEPARATOR + HoodieTableMetaClient.METAFOLDER_NAME), true);
 
     // Create table
     assertTrue(prepareTable());
 
     HoodieTimeline timeline =
-        HoodieCLI.getTableMetaClient().getActiveTimeline().getCommitTimeline().filterCompletedInstants();
+        HoodieCLI.getTableMetaClient().getActiveTimeline().getCommitAndReplaceTimeline().filterCompletedInstants();
     assertEquals(0, timeline.countInstants(), "There should have no instant at first");
 
     // generate four savepoints
     for (int i = 100; i < 104; i++) {
       String instantTime = String.valueOf(i);
-      HoodieTestDataGenerator.createCommitFile(tablePath, instantTime, hadoopConf());
+      HoodieTestDataGenerator.createCommitFile(tablePath, instantTime, storageConf());
     }
 
     // Before refresh, no instant
     timeline =
-        HoodieCLI.getTableMetaClient().getActiveTimeline().getCommitTimeline().filterCompletedInstants();
+        HoodieCLI.getTableMetaClient().getActiveTimeline().getCommitAndReplaceTimeline().filterCompletedInstants();
     assertEquals(0, timeline.countInstants(), "there should have no instant");
 
-    CommandResult cr = shell().executeCommand(command);
-    assertTrue(cr.isSuccess());
+    Object result = shell.evaluate(() -> command);
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
     timeline =
-        HoodieCLI.getTableMetaClient().getActiveTimeline().getCommitTimeline().filterCompletedInstants();
+        HoodieCLI.getTableMetaClient().getActiveTimeline().getCommitAndReplaceTimeline().filterCompletedInstants();
 
     // After refresh, there are 4 instants
     assertEquals(4, timeline.countInstants(), "there should have 4 instants");
@@ -214,10 +234,11 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
   @Test
   public void testFetchTableSchema() throws Exception {
     // Create table and connect
-    HoodieCLI.conf = hadoopConf();
+    HoodieCLI.conf = storageConf();
     new TableCommand().createTable(
         tablePath, tableName, HoodieTableType.COPY_ON_WRITE.name(),
-        "", TimelineLayoutVersion.VERSION_1, "org.apache.hudi.common.model.HoodieAvroPayload");
+        "", HoodieTableVersion.current().versionCode(),
+        "org.apache.hudi.common.model.HoodieAvroPayload");
 
     String schemaStr = "{\n"
         + "         \"type\" : \"record\",\n"
@@ -234,10 +255,10 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
 
     generateData(schemaStr);
 
-    CommandResult cr = shell().executeCommand("fetch table schema");
-    assertTrue(cr.isSuccess());
+    Object result = shell.evaluate(() -> "fetch table schema");
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
-    String actualSchemaStr = cr.getResult().toString().substring(cr.getResult().toString().indexOf("{"));
+    String actualSchemaStr = result.toString().substring(result.toString().indexOf("{"));
     Schema actualSchema = new Schema.Parser().parse(actualSchemaStr);
 
     Schema expectedSchema = new Schema.Parser().parse(schemaStr);
@@ -245,8 +266,8 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
     assertEquals(actualSchema, expectedSchema);
 
     File file = File.createTempFile("temp", null);
-    cr = shell().executeCommand("fetch table schema --outputFilePath " + file.getAbsolutePath());
-    assertTrue(cr.isSuccess());
+    result = shell.evaluate(() -> "fetch table schema --outputFilePath " + file.getAbsolutePath());
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
     actualSchemaStr = getFileContent(file.getAbsolutePath());
     actualSchema = new Schema.Parser().parse(actualSchemaStr);
@@ -281,6 +302,6 @@ public class TestTableCommand extends CLIFunctionalTestHarness {
     byte[] data = new byte[(int) fileToRead.length()];
     fis.read(data);
     fis.close();
-    return new String(data, StandardCharsets.UTF_8);
+    return fromUTF8Bytes(data);
   }
 }

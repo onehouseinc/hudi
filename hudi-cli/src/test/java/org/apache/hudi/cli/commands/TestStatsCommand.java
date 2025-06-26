@@ -24,6 +24,7 @@ import org.apache.hudi.cli.HoodieTableHeaderFields;
 import org.apache.hudi.cli.TableHeader;
 import org.apache.hudi.cli.functional.CLIFunctionalTestHarness;
 import org.apache.hudi.cli.testutils.HoodieTestCommitMetadataGenerator;
+import org.apache.hudi.cli.testutils.ShellEvaluationResultUtil;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.table.timeline.versioning.TimelineLayoutVersion;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
@@ -36,7 +37,9 @@ import com.codahale.metrics.UniformReservoir;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.springframework.shell.core.CommandResult;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.shell.Shell;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
@@ -53,7 +56,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Test class of {@link org.apache.hudi.cli.commands.StatsCommand}.
  */
 @Tag("functional")
+@SpringBootTest(properties = {"spring.shell.interactive.enabled=false", "spring.shell.command.script.enabled=false"})
 public class TestStatsCommand extends CLIFunctionalTestHarness {
+
+  @Autowired
+  private Shell shell;
 
   private String tablePath;
 
@@ -62,7 +69,7 @@ public class TestStatsCommand extends CLIFunctionalTestHarness {
     String tableName = tableName();
     tablePath = tablePath(tableName);
 
-    HoodieCLI.conf = hadoopConf();
+    HoodieCLI.conf = storageConf();
     // Create table and connect
     new TableCommand().createTable(
         tablePath, tableName, HoodieTableType.COPY_ON_WRITE.name(),
@@ -83,12 +90,12 @@ public class TestStatsCommand extends CLIFunctionalTestHarness {
     for (Map.Entry<String, Integer[]> entry : data.entrySet()) {
       String k = entry.getKey();
       Integer[] v = entry.getValue();
-      HoodieTestCommitMetadataGenerator.createCommitFileWithMetadata(tablePath, k, hadoopConf(),
+      HoodieTestCommitMetadataGenerator.createCommitFileWithMetadata(tablePath, k, storageConf(),
           Option.of(v[0]), Option.of(v[1]));
     }
 
-    CommandResult cr = shell().executeCommand("stats wa");
-    assertTrue(cr.isSuccess());
+    Object result = shell.evaluate(() -> "stats wa");
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
     // generate expect
     List<Comparable[]> rows = new ArrayList<>();
@@ -107,7 +114,7 @@ public class TestStatsCommand extends CLIFunctionalTestHarness {
         .addTableHeaderField(HoodieTableHeaderFields.HEADER_WRITE_AMPLIFICATION_FACTOR);
     String expected = HoodiePrintHelper.print(header, new HashMap<>(), "", false, -1, false, rows);
     expected = removeNonWordAndStripSpace(expected);
-    String got = removeNonWordAndStripSpace(cr.getResult().toString());
+    String got = removeNonWordAndStripSpace(result.toString());
     assertEquals(expected, got);
   }
 
@@ -142,8 +149,8 @@ public class TestStatsCommand extends CLIFunctionalTestHarness {
         .withBaseFilesInPartition(partition2, data2[1], data2[2])
         .withBaseFilesInPartition(partition3, data2[3]);
 
-    CommandResult cr = shell().executeCommand("stats filesizes");
-    assertTrue(cr.isSuccess());
+    Object result = shell.evaluate(() -> "stats filesizes");
+    assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
     Histogram globalHistogram = new Histogram(new UniformReservoir(StatsCommand.MAX_FILES));
     HashMap<String, Histogram> commitHistoMap = new HashMap<>();
@@ -177,7 +184,7 @@ public class TestStatsCommand extends CLIFunctionalTestHarness {
     String expect = HoodiePrintHelper.print(header, new StatsCommand().getFieldNameToConverterMap(),
         "", false, -1, false, rows);
     expect = removeNonWordAndStripSpace(expect);
-    String got = removeNonWordAndStripSpace(cr.getResult().toString());
+    String got = removeNonWordAndStripSpace(result.toString());
     assertEquals(expect, got);
   }
 }

@@ -21,6 +21,7 @@ package org.apache.hudi.table.action.commit;
 import org.apache.hudi.client.SparkRDDWriteClient;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.common.bloom.BloomFilter;
+import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieAvroRecord;
@@ -35,19 +36,19 @@ import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.common.testutils.RawTripTestPayload;
 import org.apache.hudi.common.testutils.Transformations;
-import org.apache.hudi.common.util.BaseFileUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieIndexConfig;
 import org.apache.hudi.config.HoodieLayoutConfig;
-import org.apache.hudi.config.HoodieStorageConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.data.HoodieJavaRDD;
 import org.apache.hudi.hadoop.HoodieParquetInputFormat;
 import org.apache.hudi.hadoop.utils.HoodieHiveUtils;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.io.HoodieCreateHandle;
+import org.apache.hudi.io.storage.HoodieIOFactory;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
+import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.HoodieSparkCopyOnWriteTable;
 import org.apache.hudi.table.HoodieSparkTable;
 import org.apache.hudi.table.HoodieTable;
@@ -61,8 +62,6 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.apache.parquet.avro.AvroReadSupport;
 import org.apache.parquet.hadoop.ParquetReader;
 import org.apache.spark.TaskContext;
@@ -72,18 +71,24 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.Serializable;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import static org.apache.hudi.common.table.timeline.HoodieTimeline.COMMIT_ACTION;
 import static org.apache.hudi.common.testutils.HoodieTestDataGenerator.TRIP_EXAMPLE_SCHEMA;
 import static org.apache.hudi.common.testutils.HoodieTestTable.makeNewCommitTime;
 import static org.apache.hudi.common.testutils.SchemaTestUtil.getSchemaFromResource;
@@ -95,9 +100,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
+public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase implements Serializable {
 
-  private static final Logger LOG = LogManager.getLogger(TestCopyOnWriteActionExecutor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestCopyOnWriteActionExecutor.class);
   private static final Schema SCHEMA = getSchemaFromResource(TestCopyOnWriteActionExecutor.class, "/exampleSchema.avsc");
   private static final Stream<Arguments> indexType() {
     HoodieIndex.IndexType[] data = new HoodieIndex.IndexType[] {
@@ -117,17 +122,19 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
     metaClient = HoodieTableMetaClient.reload(metaClient);
     HoodieTable table = HoodieSparkTable.create(config, context, metaClient);
 
-    Pair<Path, String> newPathWithWriteToken = jsc.parallelize(Arrays.asList(1)).map(x -> {
+    Pair<StoragePath, String> newPathWithWriteToken = jsc.parallelize(Arrays.asList(1)).map(x -> {
       HoodieRecord record = mock(HoodieRecord.class);
       when(record.getPartitionPath()).thenReturn(partitionPath);
       String writeToken = FSUtils.makeWriteToken(TaskContext.getPartitionId(), TaskContext.get().stageId(),
           TaskContext.get().taskAttemptId());
       HoodieCreateHandle io = new HoodieCreateHandle(config, instantTime, table, partitionPath, fileName, supplier);
-      return Pair.of(io.makeNewPath(record.getPartitionPath()), writeToken);
+      Pair<StoragePath, String> result = Pair.of(io.makeNewPath(record.getPartitionPath()), writeToken);
+      io.close();
+      return result;
     }).collect().get(0);
 
     assertEquals(newPathWithWriteToken.getKey().toString(), Paths.get(this.basePath, partitionPath,
-        FSUtils.makeBaseFileName(instantTime, newPathWithWriteToken.getRight(), fileName)).toString());
+        FSUtils.makeBaseFileName(instantTime, newPathWithWriteToken.getRight(), fileName, BASE_FILE_EXTENSION)).toString());
   }
 
   private HoodieWriteConfig makeHoodieClientConfig() {
@@ -145,18 +152,17 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
     Properties props = new Properties();
     HoodieIndexConfig.Builder indexConfig = HoodieIndexConfig.newBuilder()
         .withIndexType(indexType);
-    props.putAll(indexConfig.build().getProps());
     if (indexType.equals(HoodieIndex.IndexType.BUCKET)) {
       props.setProperty(KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key(), "_row_key");
       indexConfig.fromProperties(props)
           .withIndexKeyField("_row_key")
           .withBucketNum("1")
           .withBucketIndexEngineType(HoodieIndex.BucketIndexEngineType.SIMPLE);
-      props.putAll(indexConfig.build().getProps());
       props.putAll(HoodieLayoutConfig.newBuilder().fromProperties(props)
           .withLayoutType(HoodieStorageLayout.LayoutType.BUCKET.name())
           .withLayoutPartitioner(SparkBucketIndexPartitioner.class.getName()).build().getProps());
     }
+    props.putAll(indexConfig.build().getProps());
     return props;
   }
 
@@ -167,9 +173,8 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
     // Prepare the AvroParquetIO
     HoodieWriteConfig config = makeHoodieClientConfigBuilder()
         .withProps(makeIndexConfig(indexType)).build();
-    String firstCommitTime = makeNewCommitTime();
     SparkRDDWriteClient writeClient = getHoodieWriteClient(config);
-    writeClient.startCommitWithTime(firstCommitTime);
+    String firstCommitTime = writeClient.startCommit();
     metaClient = HoodieTableMetaClient.reload(metaClient);
 
     String partitionPath = "2016/01/31";
@@ -195,20 +200,24 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
 
     // Insert new records
     final HoodieSparkCopyOnWriteTable cowTable = table;
-    writeClient.insert(jsc.parallelize(records, 1), firstCommitTime);
+    JavaRDD<WriteStatus> writeStatusJavaRDD = writeClient.insert(jsc.parallelize(records, 1), firstCommitTime);
+    writeClient.commit(firstCommitTime, writeStatusJavaRDD, Option.empty(), COMMIT_ACTION, Collections.emptyMap(), Option.empty());
 
     FileStatus[] allFiles = getIncrementalFiles(partitionPath, "0", -1);
     assertEquals(1, allFiles.length);
 
     // Read out the bloom filter and make sure filter can answer record exist or not
     Path filePath = allFiles[0].getPath();
-    BloomFilter filter = BaseFileUtils.getInstance(table.getBaseFileFormat()).readBloomFilterFromMetadata(hadoopConf, filePath);
+    BloomFilter filter = HoodieIOFactory.getIOFactory(storage).getFileFormatUtils(table.getBaseFileFormat())
+        .readBloomFilterFromMetadata(storage, new StoragePath(filePath.toUri()));
     for (HoodieRecord record : records) {
       assertTrue(filter.mightContain(record.getRecordKey()));
     }
 
     // Read the base file, check the record content
-    List<GenericRecord> fileRecords = BaseFileUtils.getInstance(table.getBaseFileFormat()).readAvroRecords(hadoopConf, filePath);
+    List<GenericRecord> fileRecords = HoodieIOFactory.getIOFactory(storage)
+        .getFileFormatUtils(table.getBaseFileFormat())
+        .readAvroRecords(storage, new StoragePath(filePath.toUri()));
     GenericRecord newRecord;
     int index = 0;
     for (GenericRecord record : fileRecords) {
@@ -229,11 +238,10 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
 
     List<HoodieRecord> updatedRecords = Arrays.asList(updatedRecord1, insertedRecord1);
 
-    Thread.sleep(1000);
-    String newCommitTime = makeNewCommitTime();
     metaClient = HoodieTableMetaClient.reload(metaClient);
-    writeClient.startCommitWithTime(newCommitTime);
-    List<WriteStatus> statuses = writeClient.upsert(jsc.parallelize(updatedRecords), newCommitTime).collect();
+    String newCommitTime = writeClient.startCommit();
+    writeStatusJavaRDD = writeClient.upsert(jsc.parallelize(updatedRecords), newCommitTime);
+    writeClient.commit(newCommitTime, writeStatusJavaRDD, Option.empty(), COMMIT_ACTION, Collections.emptyMap(), Option.empty());
 
     allFiles = getIncrementalFiles(partitionPath, firstCommitTime, -1);
     assertEquals(1, allFiles.length);
@@ -242,8 +250,8 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
 
     // Check whether the record has been updated
     Path updatedFilePath = allFiles[0].getPath();
-    BloomFilter updatedFilter =
-        BaseFileUtils.getInstance(metaClient).readBloomFilterFromMetadata(hadoopConf, updatedFilePath);
+    BloomFilter updatedFilter = getFileUtilsInstance(metaClient)
+        .readBloomFilterFromMetadata(storage, new StoragePath(updatedFilePath.toUri()));
     for (HoodieRecord record : records) {
       // No change to the _row_key
       assertTrue(updatedFilter.mightContain(record.getRecordKey()));
@@ -263,6 +271,7 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
     }
     updatedReader.close();
     // Also check the numRecordsWritten
+    List<WriteStatus> statuses = writeStatusJavaRDD.collect();
     WriteStatus writeStatus = statuses.get(0);
     assertEquals(1, statuses.size(), "Should be only one file generated");
     assertEquals(4, writeStatus.getStat().getNumWrites());// 3 rewritten records + 1 new record
@@ -272,9 +281,9 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
           throws Exception {
     // initialize parquet input format
     HoodieParquetInputFormat hoodieInputFormat = new HoodieParquetInputFormat();
-    JobConf jobConf = new JobConf(hadoopConf);
+    JobConf jobConf = new JobConf(storageConf.unwrap());
     hoodieInputFormat.setConf(jobConf);
-    HoodieTestUtils.init(hadoopConf, basePath, HoodieTableType.COPY_ON_WRITE);
+    HoodieTestUtils.init(storageConf, basePath, HoodieTableType.COPY_ON_WRITE);
     setupIncremental(jobConf, startCommitTime, numCommitsToPull);
     FileInputFormat.setInputPaths(jobConf, Paths.get(basePath, partitionPath).toString());
     return hoodieInputFormat.listStatus(jobConf);
@@ -440,7 +449,7 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
     int counts = 0;
     for (File file : Paths.get(basePath, "2016/01/31").toFile().listFiles()) {
       if (file.getName().endsWith(table.getBaseFileExtension()) && FSUtils.getCommitTime(file.getName()).equals(instantTime)) {
-        LOG.info(file.getName() + "-" + file.length());
+        LOG.info("{}-{}", file.getName(), file.length());
         counts++;
       }
     }
@@ -450,46 +459,56 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
 
   @Test
   public void testInsertUpsertWithHoodieAvroPayload() throws Exception {
-    Schema schema = getSchemaFromResource(TestCopyOnWriteActionExecutor.class, "/testDataGeneratorSchema.txt");
-    HoodieWriteConfig config = HoodieWriteConfig.newBuilder().withPath(basePath).withSchema(schema.toString())
-        .withFileSystemViewConfig(FileSystemViewStorageConfig.newBuilder()
-            .withRemoteServerPort(timelineServicePort).build())
-        .withStorageConfig(HoodieStorageConfig.newBuilder()
-            .parquetMaxFileSize(1000 * 1024).hfileMaxFileSize(1000 * 1024).build()).build();
+    HoodieWriteConfig config =
+        HoodieWriteConfig.newBuilder().withPath(basePath).withSchema(TRIP_EXAMPLE_SCHEMA)
+            .withFileSystemViewConfig(FileSystemViewStorageConfig.newBuilder()
+                .withRemoteServerPort(timelineServicePort).build())
+            .withStorageConfig(HoodieStorageConfig.newBuilder()
+                .parquetMaxFileSize(1000 * 1024).hfileMaxFileSize(1000 * 1024).build()).build();
     metaClient = HoodieTableMetaClient.reload(metaClient);
-    HoodieSparkCopyOnWriteTable table = (HoodieSparkCopyOnWriteTable) HoodieSparkTable.create(config, context, metaClient);
+    HoodieSparkCopyOnWriteTable table =
+        (HoodieSparkCopyOnWriteTable) HoodieSparkTable.create(config, context, metaClient);
     String instantTime = "000";
     // Perform inserts of 100 records to test CreateHandle and BufferedExecutor
-    final List<HoodieRecord> inserts = dataGen.generateInsertsWithHoodieAvroPayload(instantTime, 100);
-    BaseSparkCommitActionExecutor actionExecutor = new SparkInsertCommitActionExecutor(context, config, table,
-        instantTime, context.parallelize(inserts));
-    final List<List<WriteStatus>> ws = jsc.parallelize(Arrays.asList(1)).map(x -> {
-      return actionExecutor.handleInsert(UUID.randomUUID().toString(), inserts.iterator());
-    }).map(Transformations::flatten).collect();
+    final List<HoodieRecord> inserts =
+        dataGen.generateInsertsWithHoodieAvroPayload(instantTime, 100);
+    BaseSparkCommitActionExecutor actionExecutor =
+        new SparkInsertCommitActionExecutor(context, config, table,
+            instantTime, context.parallelize(inserts));
+    final List<List<WriteStatus>> ws = jsc.parallelize(Arrays.asList(1))
+        .map(x -> (Iterator<List<WriteStatus>>)
+            actionExecutor.handleInsert(UUID.randomUUID().toString(), inserts.iterator()))
+        .map(Transformations::flatten).collect();
 
     WriteStatus writeStatus = ws.get(0).get(0);
     String fileId = writeStatus.getFileId();
-    metaClient.getFs().create(new Path(Paths.get(basePath, ".hoodie", "000.commit").toString())).close();
-    final List<HoodieRecord> updates = dataGen.generateUpdatesWithHoodieAvroPayload(instantTime, inserts);
+    metaClient.getStorage().create(
+        new StoragePath(Paths.get(basePath, ".hoodie/timeline", "000.commit").toString())).close();
+    final List<HoodieRecord> updates =
+        dataGen.generateUpdatesWithHoodieAvroPayload(instantTime, inserts);
 
     String partitionPath = writeStatus.getPartitionPath();
-    long numRecordsInPartition = updates.stream().filter(u -> u.getPartitionPath().equals(partitionPath)).count();
-    table = (HoodieSparkCopyOnWriteTable) HoodieSparkTable.create(config, context, HoodieTableMetaClient.reload(metaClient));
-    BaseSparkCommitActionExecutor newActionExecutor = new SparkUpsertCommitActionExecutor(context, config, table,
-        instantTime, context.parallelize(updates));
-    final List<List<WriteStatus>> updateStatus = jsc.parallelize(Arrays.asList(1)).map(x -> {
-      return newActionExecutor.handleUpdate(partitionPath, fileId, updates.iterator());
-    }).map(Transformations::flatten).collect();
-    assertEquals(updates.size() - numRecordsInPartition, updateStatus.get(0).get(0).getTotalErrorRecords());
+    long numRecordsInPartition =
+        updates.stream().filter(u -> u.getPartitionPath().equals(partitionPath)).count();
+    table = (HoodieSparkCopyOnWriteTable) HoodieSparkTable.create(config, context,
+        HoodieTableMetaClient.reload(metaClient));
+    BaseSparkCommitActionExecutor newActionExecutor =
+        new SparkUpsertCommitActionExecutor(context, config, table,
+            instantTime, context.parallelize(updates));
+    final List<List<WriteStatus>> updateStatus = jsc.parallelize(Arrays.asList(1))
+        .map(x -> (Iterator<List<WriteStatus>>)
+            newActionExecutor.handleUpdate(partitionPath, fileId, updates.iterator()))
+        .map(Transformations::flatten).collect();
+    assertEquals(updates.size() - numRecordsInPartition,
+        updateStatus.get(0).get(0).getTotalErrorRecords());
   }
 
-  public void testBulkInsertRecords(String bulkInsertMode) throws Exception {
+  private void testBulkInsertRecords(String bulkInsertMode) {
     HoodieWriteConfig config = HoodieWriteConfig.newBuilder()
         .withPath(basePath).withSchema(TRIP_EXAMPLE_SCHEMA)
         .withBulkInsertParallelism(2).withBulkInsertSortMode(bulkInsertMode).build();
-    String instantTime = makeNewCommitTime();
     SparkRDDWriteClient writeClient = getHoodieWriteClient(config);
-    writeClient.startCommitWithTime(instantTime);
+    String instantTime = writeClient.startCommit();
     metaClient = HoodieTableMetaClient.reload(metaClient);
     HoodieSparkCopyOnWriteTable table = (HoodieSparkCopyOnWriteTable) HoodieSparkTable.create(config, context, metaClient);
 
@@ -527,28 +546,31 @@ public class TestCopyOnWriteActionExecutor extends HoodieClientTestBase {
       assertTrue(table.getPartitionMetafileFormat().isPresent());
     }
 
-    String instantTime = makeNewCommitTime();
     SparkRDDWriteClient writeClient = getHoodieWriteClient(config);
-    writeClient.startCommitWithTime(instantTime);
+    String instantTime = writeClient.startCommit();
 
     // Insert new records
-    final JavaRDD<HoodieRecord> inputRecords = generateTestRecordsForBulkInsert(jsc, 10);
-    writeClient.bulkInsert(inputRecords, instantTime);
+    final JavaRDD<HoodieRecord> inputRecords = generateTestRecordsForBulkInsert(jsc, 50);
+    JavaRDD<WriteStatus> writeStatusJavaRDD = writeClient.bulkInsert(inputRecords, instantTime);
+    writeClient.commit(instantTime, writeStatusJavaRDD, Option.empty(), COMMIT_ACTION, Collections.emptyMap(), Option.empty());
 
     // Partition metafile should be created
-    Path partitionPath = new Path(basePath, HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH);
-    assertTrue(HoodiePartitionMetadata.hasPartitionMetadata(fs, partitionPath));
-    Option<Path> metafilePath = HoodiePartitionMetadata.getPartitionMetafilePath(fs, partitionPath);
+    StoragePath partitionPath = new StoragePath(
+        basePath, HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH);
+    assertTrue(HoodiePartitionMetadata.hasPartitionMetadata(storage, partitionPath));
+    Option<StoragePath> metafilePath =
+        HoodiePartitionMetadata.getPartitionMetafilePath(storage, partitionPath);
     if (partitionMetafileUseBaseFormat) {
       // Extension should be the same as the data file format of the table
-      assertTrue(metafilePath.get().toString().endsWith(table.getBaseFileFormat().getFileExtension()));
+      assertTrue(metafilePath.get().toString().endsWith(table.getBaseFileExtension()));
     } else {
       // No extension as it is in properties file format
-      assertTrue(metafilePath.get().toString().endsWith(HoodiePartitionMetadata.HOODIE_PARTITION_METAFILE_PREFIX));
+      assertTrue(metafilePath.get().toString()
+          .endsWith(HoodiePartitionMetadata.HOODIE_PARTITION_METAFILE_PREFIX));
     }
 
     // Validate contents of the partition metafile
-    HoodiePartitionMetadata partitionMetadata = new HoodiePartitionMetadata(fs, partitionPath);
+    HoodiePartitionMetadata partitionMetadata = new HoodiePartitionMetadata(storage, partitionPath);
     partitionMetadata.readFromFS();
     assertTrue(partitionMetadata.getPartitionDepth() == 3);
     assertTrue(partitionMetadata.readPartitionCreatedCommitTime().get().equals(instantTime));

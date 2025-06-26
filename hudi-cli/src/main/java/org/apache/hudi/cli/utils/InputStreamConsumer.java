@@ -18,18 +18,21 @@
 
 package org.apache.hudi.cli.utils;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.util.logging.Logger;
+import java.nio.charset.StandardCharsets;
 
 /**
  * This class is responsible to read a Process output.
  */
 public class InputStreamConsumer extends Thread {
 
-  private static final Logger LOG = Logger.getLogger(InputStreamConsumer.class.getName());
-  private InputStream is;
+  private static final Logger LOG = LoggerFactory.getLogger(InputStreamConsumer.class);
+  private final InputStream is;
 
   public InputStreamConsumer(InputStream is) {
     this.is = is;
@@ -38,11 +41,11 @@ public class InputStreamConsumer extends Thread {
   @Override
   public void run() {
     try {
-      InputStreamReader isr = new InputStreamReader(is);
+      InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8);
       BufferedReader br = new BufferedReader(isr);
       br.lines().forEach(LOG::info);
     } catch (Exception e) {
-      LOG.severe(e.toString());
+      LOG.warn(e.toString());
       e.printStackTrace();
     }
   }

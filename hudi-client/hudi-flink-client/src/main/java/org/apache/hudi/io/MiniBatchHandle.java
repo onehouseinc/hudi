@@ -18,7 +18,7 @@
 
 package org.apache.hudi.io;
 
-import org.apache.hadoop.fs.Path;
+import org.apache.hudi.storage.StoragePath;
 
 /**
  * Hoodie write handle that supports write as mini-batch.
@@ -30,7 +30,8 @@ public interface MiniBatchHandle {
    * come from one checkpoint interval. The file handle may roll over to new name
    * if the name conflicts, give a chance to clean the intermediate file.
    */
-  default void finalizeWrite() {}
+  default void finalizeWrite() {
+  }
 
   /**
    * Close the file handle gracefully, if any error happens during the file handle close,
@@ -41,13 +42,5 @@ public interface MiniBatchHandle {
   /**
    * Returns the write file path.
    */
-  Path getWritePath();
-
-  /**
-   * Whether the old write file should be replaced with the same name new file
-   * using content merged with incremental new data batch.
-   */
-  default boolean shouldReplace() {
-    return true;
-  }
+  StoragePath getWritePath();
 }

@@ -25,7 +25,6 @@ import org.apache.hudi.cli.HoodiePrintHelper;
 import org.apache.hudi.cli.HoodieTableHeaderFields;
 import org.apache.hudi.cli.TableHeader;
 import org.apache.hudi.cli.commands.SparkMain.SparkCommand;
-import org.apache.hudi.cli.utils.CommitUtil;
 import org.apache.hudi.cli.utils.InputStreamConsumer;
 import org.apache.hudi.cli.utils.SparkUtil;
 import org.apache.hudi.client.CompactionAdminClient.RenameOpResult;
@@ -34,31 +33,29 @@ import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieArchivedTimeline;
-import org.apache.hudi.common.table.timeline.HoodieDefaultTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.table.timeline.TimelineMetadataUtils;
+import org.apache.hudi.common.table.timeline.InstantGenerator;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.storage.HoodieStorage;
+import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.action.compact.OperationResult;
 import org.apache.hudi.utilities.UtilHelpers;
 
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.apache.spark.launcher.SparkLauncher;
 import org.apache.spark.util.Utils;
-import org.springframework.shell.core.CommandMarker;
-import org.springframework.shell.core.annotation.CliCommand;
-import org.springframework.shell.core.annotation.CliOption;
-import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.shell.standard.ShellComponent;
+import org.springframework.shell.standard.ShellMethod;
+import org.springframework.shell.standard.ShellOption;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -71,15 +68,22 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static org.apache.hudi.cli.utils.CommitUtil.getTimeDaysAgo;
+import static org.apache.hudi.util.JavaScalaConverters.convertJavaPropertiesToScalaMap;
+
 /**
  * CLI command to display compaction related options.
  */
-@Component
-public class CompactionCommand implements CommandMarker {
+@ShellComponent
+public class CompactionCommand {
 
-  private static final Logger LOG = LogManager.getLogger(CompactionCommand.class);
+  private static final Logger LOG = LoggerFactory.getLogger(CompactionCommand.class);
 
   private static final String TMP_DIR = "/tmp/";
+
+  public static final String COMPACTION_SCH_SUCCESSFUL = "Attempted to schedule compaction for ";
+  public static final String COMPACTION_EXE_SUCCESSFUL = "Compaction successfully completed for ";
+  public static final String COMPACTION_SCH_EXE_SUCCESSFUL = "Schedule and execute compaction successfully completed";
 
   private HoodieTableMetaClient checkAndGetMetaClient() {
     HoodieTableMetaClient client = HoodieCLI.getTableMetaClient();
@@ -89,16 +93,16 @@ public class CompactionCommand implements CommandMarker {
     return client;
   }
 
-  @CliCommand(value = "compactions show all", help = "Shows all compactions that are in active timeline")
+  @ShellMethod(key = "compactions show all", value = "Shows all compactions that are in active timeline")
   public String compactionsAll(
-      @CliOption(key = {"includeExtraMetadata"}, help = "Include extra metadata",
-          unspecifiedDefaultValue = "false") final boolean includeExtraMetadata,
-      @CliOption(key = {"limit"}, help = "Limit commits",
-          unspecifiedDefaultValue = "-1") final Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") final String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") final boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") final boolean headerOnly) {
+      @ShellOption(value = {"--includeExtraMetadata"}, help = "Include extra metadata",
+          defaultValue = "false") final boolean includeExtraMetadata,
+      @ShellOption(value = {"--limit"}, help = "Limit commits",
+          defaultValue = "-1") final Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") final String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") final boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+          defaultValue = "false") final boolean headerOnly) {
     HoodieTableMetaClient client = checkAndGetMetaClient();
     HoodieActiveTimeline activeTimeline = client.getActiveTimeline();
     return printAllCompactions(activeTimeline,
@@ -106,45 +110,44 @@ public class CompactionCommand implements CommandMarker {
         includeExtraMetadata, sortByField, descending, limit, headerOnly);
   }
 
-  @CliCommand(value = "compaction show", help = "Shows compaction details for a specific compaction instant")
+  @ShellMethod(key = "compaction show", value = "Shows compaction details for a specific compaction instant")
   public String compactionShow(
-      @CliOption(key = "instant", mandatory = true,
-          help = "Base path for the target hoodie table") final String compactionInstantTime,
-      @CliOption(key = {"limit"}, help = "Limit commits",
-          unspecifiedDefaultValue = "-1") final Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") final String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") final boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") final boolean headerOnly)
+      @ShellOption(value = "--instant",
+              help = "Base path for the target hoodie table") final String compactionInstantTime,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") final Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") final String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") final boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") final boolean headerOnly,
+      @ShellOption(value = {"--partition"}, help = "Partition value", defaultValue = ShellOption.NULL) final String partition)
       throws Exception {
     HoodieTableMetaClient client = checkAndGetMetaClient();
     HoodieActiveTimeline activeTimeline = client.getActiveTimeline();
-    HoodieCompactionPlan compactionPlan = TimelineMetadataUtils.deserializeCompactionPlan(
-        activeTimeline.readCompactionPlanAsBytes(
-            HoodieTimeline.getCompactionRequestedInstant(compactionInstantTime)).get());
+    InstantGenerator instantGenerator = client.getInstantGenerator();
+    HoodieCompactionPlan compactionPlan =
+        activeTimeline.readCompactionPlan(instantGenerator.getCompactionRequestedInstant(compactionInstantTime));
 
-    return printCompaction(compactionPlan, sortByField, descending, limit, headerOnly);
+    return printCompaction(compactionPlan, sortByField, descending, limit, headerOnly, partition);
   }
 
-  @CliCommand(value = "compactions showarchived", help = "Shows compaction details for specified time window")
+  @ShellMethod(key = "compactions showarchived", value = "Shows compaction details for specified time window")
   public String compactionsShowArchived(
-      @CliOption(key = {"includeExtraMetadata"}, help = "Include extra metadata",
-          unspecifiedDefaultValue = "false") final boolean includeExtraMetadata,
-      @CliOption(key = {"startTs"}, mandatory = false, help = "start time for compactions, default: now - 10 days")
-          String startTs,
-      @CliOption(key = {"endTs"}, mandatory = false, help = "end time for compactions, default: now - 1 day")
-          String endTs,
-      @CliOption(key = {"limit"}, help = "Limit compactions",
-          unspecifiedDefaultValue = "-1") final Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") final String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") final boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") final boolean headerOnly) {
+      @ShellOption(value = {"--includeExtraMetadata"}, help = "Include extra metadata",
+          defaultValue = "false") final boolean includeExtraMetadata,
+      @ShellOption(value = {"--startTs"}, defaultValue = ShellOption.NULL,
+              help = "start time for compactions, default: now - 10 days") String startTs,
+      @ShellOption(value = {"--endTs"}, defaultValue = ShellOption.NULL,
+              help = "end time for compactions, default: now - 1 day") String endTs,
+      @ShellOption(value = {"--limit"}, help = "Limit compactions", defaultValue = "-1") final Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") final String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") final boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") final boolean headerOnly) {
     if (StringUtils.isNullOrEmpty(startTs)) {
-      startTs = CommitUtil.getTimeDaysAgo(10);
+      startTs = getTimeDaysAgo(10);
     }
     if (StringUtils.isNullOrEmpty(endTs)) {
-      endTs = CommitUtil.getTimeDaysAgo(1);
+      endTs = getTimeDaysAgo(1);
     }
 
     HoodieTableMetaClient client = checkAndGetMetaClient();
@@ -159,80 +162,76 @@ public class CompactionCommand implements CommandMarker {
     }
   }
 
-  @CliCommand(value = "compaction showarchived", help = "Shows compaction details for a specific compaction instant")
+  @ShellMethod(key = "compaction showarchived", value = "Shows compaction details for a specific compaction instant")
   public String compactionShowArchived(
-      @CliOption(key = "instant", mandatory = true,
-          help = "instant time") final String compactionInstantTime,
-      @CliOption(key = {"limit"}, help = "Limit commits",
-          unspecifiedDefaultValue = "-1") final Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") final String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") final boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") final boolean headerOnly)
+      @ShellOption(value = "--instant", help = "instant time") final String compactionInstantTime,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") final Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") final String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") final boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") final boolean headerOnly,
+      @ShellOption(value = {"--partition"}, help = "Partition value", defaultValue = ShellOption.NULL) final String partition)
       throws Exception {
     HoodieTableMetaClient client = checkAndGetMetaClient();
     HoodieArchivedTimeline archivedTimeline = client.getArchivedTimeline();
-    HoodieInstant instant = new HoodieInstant(HoodieInstant.State.COMPLETED,
+    HoodieInstant instant = client.createNewInstant(HoodieInstant.State.COMPLETED,
         HoodieTimeline.COMPACTION_ACTION, compactionInstantTime);
     try {
       archivedTimeline.loadCompactionDetailsInMemory(compactionInstantTime);
-      HoodieCompactionPlan compactionPlan = TimelineMetadataUtils.deserializeAvroRecordMetadata(
-          archivedTimeline.getInstantDetails(instant).get(), HoodieCompactionPlan.getClassSchema());
-      return printCompaction(compactionPlan, sortByField, descending, limit, headerOnly);
+      HoodieCompactionPlan compactionPlan = archivedTimeline.readCompactionPlan(instant);
+      return printCompaction(compactionPlan, sortByField, descending, limit, headerOnly, partition);
     } finally {
       archivedTimeline.clearInstantDetailsFromMemory(compactionInstantTime);
     }
   }
 
-  @CliCommand(value = "compaction schedule", help = "Schedule Compaction")
+  @ShellMethod(key = "compaction schedule", value = "Schedule Compaction")
   public String scheduleCompact(
-      @CliOption(key = "sparkMemory", unspecifiedDefaultValue = "1G",
+      @ShellOption(value = "--sparkMemory", defaultValue = "1G",
           help = "Spark executor memory") final String sparkMemory,
-      @CliOption(key = "propsFilePath", help = "path to properties file on localfs or dfs with configurations for hoodie client for compacting",
-          unspecifiedDefaultValue = "") final String propsFilePath,
-      @CliOption(key = "hoodieConfigs", help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
-          unspecifiedDefaultValue = "") final String[] configs,
-      @CliOption(key = "sparkMaster", unspecifiedDefaultValue = "local", help = "Spark Master") String master)
+      @ShellOption(value = "--propsFilePath", help = "path to properties file on localfs or dfs with configurations for hoodie client for compacting",
+          defaultValue = "") final String propsFilePath,
+      @ShellOption(value = "--hoodieConfigs", help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
+          defaultValue = "") final String[] configs,
+      @ShellOption(value = "--sparkMaster", defaultValue = "local", help = "Spark Master") String master)
       throws Exception {
     HoodieTableMetaClient client = checkAndGetMetaClient();
     boolean initialized = HoodieCLI.initConf();
     HoodieCLI.initFS(initialized);
 
-    // First get a compaction instant time and pass it to spark launcher for scheduling compaction
-    String compactionInstantTime = HoodieActiveTimeline.createNewInstantTime();
-
     String sparkPropertiesPath =
-        Utils.getDefaultPropertiesFile(scala.collection.JavaConversions.propertiesAsScalaMap(System.getProperties()));
+        Utils.getDefaultPropertiesFile(convertJavaPropertiesToScalaMap(System.getProperties()));
     SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
-    String cmd = SparkCommand.COMPACT_SCHEDULE.toString();
-    sparkLauncher.addAppArgs(cmd, master, sparkMemory, client.getBasePath(),
-        client.getTableConfig().getTableName(), compactionInstantTime, propsFilePath);
+    String tableName = client.getTableConfig().getTableName();
+    SparkMain.addAppArgs(sparkLauncher, SparkCommand.COMPACT_SCHEDULE, master, sparkMemory, HoodieCLI.basePath,
+        tableName, propsFilePath);
     UtilHelpers.validateAndAddProperties(configs, sparkLauncher);
     Process process = sparkLauncher.launch();
     InputStreamConsumer.captureOutput(process);
     int exitCode = process.waitFor();
     if (exitCode != 0) {
-      return "Failed to run compaction for " + compactionInstantTime;
+      return "Failed to run compaction for " + tableName;
     }
-    return "Attempted to schedule compaction for " + compactionInstantTime;
+    return COMPACTION_SCH_SUCCESSFUL + tableName;
   }
 
-  @CliCommand(value = "compaction run", help = "Run Compaction for given instant time")
+  @ShellMethod(key = "compaction run", value = "Run Compaction for given instant time")
   public String compact(
-      @CliOption(key = {"parallelism"}, mandatory = true,
+      @ShellOption(value = {"--parallelism"}, defaultValue = "3",
           help = "Parallelism for hoodie compaction") final String parallelism,
-      @CliOption(key = "schemaFilePath", mandatory = true,
-          help = "Path for Avro schema file") final String schemaFilePath,
-      @CliOption(key = "sparkMaster", unspecifiedDefaultValue = "local",
+      @ShellOption(value = "--schemaFilePath",
+          help = "Path for Avro schema file", defaultValue = "") final String schemaFilePath,
+      @ShellOption(value = "--sparkMaster", defaultValue = "local",
           help = "Spark Master") String master,
-      @CliOption(key = "sparkMemory", unspecifiedDefaultValue = "4G",
+      @ShellOption(value = "--sparkMemory", defaultValue = "4G",
           help = "Spark executor memory") final String sparkMemory,
-      @CliOption(key = "retry", unspecifiedDefaultValue = "1", help = "Number of retries") final String retry,
-      @CliOption(key = "compactionInstant", help = "Base path for the target hoodie table") String compactionInstantTime,
-      @CliOption(key = "propsFilePath", help = "path to properties file on localfs or dfs with configurations for hoodie client for compacting",
-          unspecifiedDefaultValue = "") final String propsFilePath,
-      @CliOption(key = "hoodieConfigs", help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
-          unspecifiedDefaultValue = "") final String[] configs)
+      @ShellOption(value = "--retry", defaultValue = "1", help = "Number of retries") final String retry,
+      @ShellOption(value = "--compactionInstant", help = "Instant of compaction.request",
+          defaultValue = ShellOption.NULL) String compactionInstantTime,
+      @ShellOption(value = "--propsFilePath", help = "path to properties file on localfs or dfs with configurations for hoodie client for compacting",
+          defaultValue = "") final String propsFilePath,
+      @ShellOption(value = "--hoodieConfigs", help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
+          defaultValue = "") final String[] configs)
       throws Exception {
     HoodieTableMetaClient client = checkAndGetMetaClient();
     boolean initialized = HoodieCLI.initConf();
@@ -243,16 +242,16 @@ public class CompactionCommand implements CommandMarker {
       Option<String> firstPendingInstant =
           client.reloadActiveTimeline().filterCompletedAndCompactionInstants()
               .filter(instant -> instant.getAction().equals(HoodieTimeline.COMPACTION_ACTION)).firstInstant()
-              .map(HoodieInstant::getTimestamp);
+              .map(HoodieInstant::requestedTime);
       if (!firstPendingInstant.isPresent()) {
         return "NO PENDING COMPACTION TO RUN";
       }
       compactionInstantTime = firstPendingInstant.get();
     }
     String sparkPropertiesPath =
-        Utils.getDefaultPropertiesFile(scala.collection.JavaConversions.propertiesAsScalaMap(System.getProperties()));
+        Utils.getDefaultPropertiesFile(convertJavaPropertiesToScalaMap(System.getProperties()));
     SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
-    sparkLauncher.addAppArgs(SparkCommand.COMPACT_RUN.toString(), master, sparkMemory, client.getBasePath(),
+    SparkMain.addAppArgs(sparkLauncher, SparkCommand.COMPACT_RUN, master, sparkMemory, HoodieCLI.basePath,
         client.getTableConfig().getTableName(), compactionInstantTime, parallelism, schemaFilePath,
         retry, propsFilePath);
     UtilHelpers.validateAndAddProperties(configs, sparkLauncher);
@@ -262,32 +261,32 @@ public class CompactionCommand implements CommandMarker {
     if (exitCode != 0) {
       return "Failed to run compaction for " + compactionInstantTime;
     }
-    return "Compaction successfully completed for " + compactionInstantTime;
+    return COMPACTION_EXE_SUCCESSFUL + compactionInstantTime;
   }
 
-  @CliCommand(value = "compaction scheduleAndExecute", help = "Schedule compaction plan and execute this plan")
+  @ShellMethod(key = "compaction scheduleAndExecute", value = "Schedule compaction plan and execute this plan")
   public String compact(
-      @CliOption(key = {"parallelism"}, mandatory = true,
+      @ShellOption(value = {"--parallelism"}, defaultValue = "3",
           help = "Parallelism for hoodie compaction") final String parallelism,
-      @CliOption(key = "schemaFilePath", mandatory = true,
-          help = "Path for Avro schema file") final String schemaFilePath,
-      @CliOption(key = "sparkMaster", unspecifiedDefaultValue = "local",
+      @ShellOption(value = "--schemaFilePath",
+          help = "Path for Avro schema file", defaultValue = ShellOption.NULL) final String schemaFilePath,
+      @ShellOption(value = "--sparkMaster", defaultValue = "local",
           help = "Spark Master") String master,
-      @CliOption(key = "sparkMemory", unspecifiedDefaultValue = "4G",
+      @ShellOption(value = "--sparkMemory", defaultValue = "4G",
           help = "Spark executor memory") final String sparkMemory,
-      @CliOption(key = "retry", unspecifiedDefaultValue = "1", help = "Number of retries") final String retry,
-      @CliOption(key = "propsFilePath", help = "path to properties file on localfs or dfs with configurations for hoodie client for compacting",
-          unspecifiedDefaultValue = "") final String propsFilePath,
-      @CliOption(key = "hoodieConfigs", help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
-          unspecifiedDefaultValue = "") final String[] configs)
+      @ShellOption(value = "--retry", defaultValue = "1", help = "Number of retries") final String retry,
+      @ShellOption(value = "--propsFilePath", help = "path to properties file on localfs or dfs with configurations for hoodie client for compacting",
+              defaultValue = "") final String propsFilePath,
+      @ShellOption(value = "--hoodieConfigs", help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
+              defaultValue = "") final String[] configs)
       throws Exception {
     HoodieTableMetaClient client = checkAndGetMetaClient();
     boolean initialized = HoodieCLI.initConf();
     HoodieCLI.initFS(initialized);
     String sparkPropertiesPath =
-        Utils.getDefaultPropertiesFile(scala.collection.JavaConversions.propertiesAsScalaMap(System.getProperties()));
+        Utils.getDefaultPropertiesFile(convertJavaPropertiesToScalaMap(System.getProperties()));
     SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
-    sparkLauncher.addAppArgs(SparkCommand.COMPACT_SCHEDULE_AND_EXECUTE.toString(), master, sparkMemory, client.getBasePath(),
+    SparkMain.addAppArgs(sparkLauncher, SparkCommand.COMPACT_SCHEDULE_AND_EXECUTE, master, sparkMemory, HoodieCLI.basePath,
         client.getTableConfig().getTableName(), parallelism, schemaFilePath,
         retry, propsFilePath);
     UtilHelpers.validateAndAddProperties(configs, sparkLauncher);
@@ -297,19 +296,19 @@ public class CompactionCommand implements CommandMarker {
     if (exitCode != 0) {
       return "Failed to schedule and execute compaction ";
     }
-    return "Schedule and execute compaction successfully completed";
+    return COMPACTION_SCH_EXE_SUCCESSFUL;
   }
 
   /**
    * Prints all compaction details.
    */
-  private String printAllCompactions(HoodieDefaultTimeline timeline,
-                                     Function<HoodieInstant, HoodieCompactionPlan> compactionPlanReader,
-                                     boolean includeExtraMetadata,
-                                     String sortByField,
-                                     boolean descending,
-                                     int limit,
-                                     boolean headerOnly) {
+  private static String printAllCompactions(HoodieTimeline timeline,
+                                            Function<HoodieInstant, HoodieCompactionPlan> compactionPlanReader,
+                                            boolean includeExtraMetadata,
+                                            String sortByField,
+                                            boolean descending,
+                                            int limit,
+                                            boolean headerOnly) {
 
     Stream<HoodieInstant> instantsStream = timeline.getWriteTimeline().getReverseOrderedInstants();
     List<Pair<HoodieInstant, HoodieCompactionPlan>> compactionPlans = instantsStream
@@ -317,26 +316,26 @@ public class CompactionCommand implements CommandMarker {
         .filter(pair -> pair.getRight() != null)
         .collect(Collectors.toList());
 
-    Set<String> committedInstants = timeline.getCommitTimeline().filterCompletedInstants()
-        .getInstants().map(HoodieInstant::getTimestamp).collect(Collectors.toSet());
+    Set<String> committedInstants = timeline.getCommitAndReplaceTimeline().filterCompletedInstants()
+        .getInstantsAsStream().map(HoodieInstant::requestedTime).collect(Collectors.toSet());
 
     List<Comparable[]> rows = new ArrayList<>();
     for (Pair<HoodieInstant, HoodieCompactionPlan> compactionPlan : compactionPlans) {
       HoodieCompactionPlan plan = compactionPlan.getRight();
       HoodieInstant instant = compactionPlan.getLeft();
       final HoodieInstant.State state;
-      if (committedInstants.contains(instant.getTimestamp())) {
+      if (committedInstants.contains(instant.requestedTime())) {
         state = HoodieInstant.State.COMPLETED;
       } else {
         state = instant.getState();
       }
 
       if (includeExtraMetadata) {
-        rows.add(new Comparable[] {instant.getTimestamp(), state.toString(),
+        rows.add(new Comparable[] {instant.requestedTime(), state.toString(),
             plan.getOperations() == null ? 0 : plan.getOperations().size(),
             plan.getExtraMetadata().toString()});
       } else {
-        rows.add(new Comparable[] {instant.getTimestamp(), state.toString(),
+        rows.add(new Comparable[] {instant.requestedTime(), state.toString(),
             plan.getOperations() == null ? 0 : plan.getOperations().size()});
       }
     }
@@ -357,7 +356,7 @@ public class CompactionCommand implements CommandMarker {
    * We can make these read methods part of HoodieDefaultTimeline and override where necessary. But the
    * BiFunction below has 'hacky' exception blocks, so restricting it to CLI.
    */
-  private <T extends HoodieDefaultTimeline, U extends HoodieInstant, V extends HoodieCompactionPlan>
+  private <T extends HoodieTimeline, U extends HoodieInstant, V extends HoodieCompactionPlan>
       Function<HoodieInstant, HoodieCompactionPlan> compactionPlanReader(
       BiFunction<T, HoodieInstant, HoodieCompactionPlan> f, T timeline) {
 
@@ -366,17 +365,10 @@ public class CompactionCommand implements CommandMarker {
 
   private HoodieCompactionPlan readCompactionPlanForArchivedTimeline(HoodieArchivedTimeline archivedTimeline,
                                                                      HoodieInstant instant) {
-    // filter inflight compaction
-    if (HoodieTimeline.COMPACTION_ACTION.equals(instant.getAction())
-        && HoodieInstant.State.INFLIGHT.equals(instant.getState())) {
-      try {
-        return TimelineMetadataUtils.deserializeAvroRecordMetadata(archivedTimeline.getInstantDetails(instant).get(),
-            HoodieCompactionPlan.getClassSchema());
-      } catch (Exception e) {
-        throw new HoodieException(e.getMessage(), e);
-      }
-    } else {
-      return null;
+    try {
+      return archivedTimeline.readCompactionPlan(instant);
+    } catch (Exception e) {
+      throw new HoodieException(e.getMessage(), e);
     }
   }
 
@@ -385,36 +377,39 @@ public class CompactionCommand implements CommandMarker {
    */
   private HoodieCompactionPlan readCompactionPlanForActiveTimeline(HoodieActiveTimeline activeTimeline,
                                                                    HoodieInstant instant) {
+    InstantGenerator instantGenerator = HoodieCLI.getTableMetaClient().getInstantGenerator();
     try {
       if (!HoodieTimeline.COMPACTION_ACTION.equals(instant.getAction())) {
         try {
           // This could be a completed compaction. Assume a compaction request file is present but skip if fails
-          return TimelineMetadataUtils.deserializeCompactionPlan(
-              activeTimeline.readCompactionPlanAsBytes(
-                  HoodieTimeline.getCompactionRequestedInstant(instant.getTimestamp())).get());
+          return activeTimeline.readCompactionPlan(
+              instantGenerator.getCompactionRequestedInstant(instant.requestedTime()));
         } catch (HoodieIOException ioe) {
           // SKIP
           return null;
         }
       } else {
-        return TimelineMetadataUtils.deserializeCompactionPlan(activeTimeline.readCompactionPlanAsBytes(
-            HoodieTimeline.getCompactionRequestedInstant(instant.getTimestamp())).get());
+        return activeTimeline.readCompactionPlan(
+            instantGenerator.getCompactionRequestedInstant(instant.requestedTime()));
       }
     } catch (IOException e) {
       throw new HoodieIOException(e.getMessage(), e);
     }
   }
 
-  protected String printCompaction(HoodieCompactionPlan compactionPlan,
-                                   String sortByField,
-                                   boolean descending,
-                                   int limit,
-                                   boolean headerOnly) {
+  protected static String printCompaction(HoodieCompactionPlan compactionPlan,
+                                          String sortByField,
+                                          boolean descending,
+                                          int limit,
+                                          boolean headerOnly,
+                                          final String partition) {
     List<Comparable[]> rows = new ArrayList<>();
     if ((null != compactionPlan) && (null != compactionPlan.getOperations())) {
       for (HoodieCompactionOperation op : compactionPlan.getOperations()) {
-        rows.add(new Comparable[] {op.getPartitionPath(), op.getFileId(), op.getBaseInstantTime(), op.getDataFilePath(),
-            op.getDeltaFilePaths().size(), op.getMetrics() == null ? "" : op.getMetrics().toString()});
+        if (StringUtils.isNullOrEmpty(partition) || partition.equals(op.getPartitionPath())) {
+          rows.add(new Comparable[] {op.getPartitionPath(), op.getFileId(), op.getBaseInstantTime(), op.getDataFilePath(),
+              op.getDeltaFilePaths().size(), op.getMetrics() == null ? "" : op.getMetrics().toString()});
+        }
       }
     }
 
@@ -430,47 +425,46 @@ public class CompactionCommand implements CommandMarker {
   }
 
   private static String getTmpSerializerFile() {
-    return TMP_DIR + UUID.randomUUID().toString() + ".ser";
+    return TMP_DIR + UUID.randomUUID() + ".ser";
   }
 
-  private <T> T deSerializeOperationResult(String inputP, FileSystem fs) throws Exception {
-    Path inputPath = new Path(inputP);
-    FSDataInputStream fsDataInputStream = fs.open(inputPath);
-    ObjectInputStream in = new ObjectInputStream(fsDataInputStream);
+  private <T> T deSerializeOperationResult(StoragePath inputPath,
+                                           HoodieStorage storage) throws Exception {
+    InputStream inputStream = storage.open(inputPath);
+    ObjectInputStream in = new ObjectInputStream(inputStream);
     try {
       T result = (T) in.readObject();
       LOG.info("Result : " + result);
       return result;
     } finally {
       in.close();
-      fsDataInputStream.close();
+      inputStream.close();
     }
   }
 
-  @CliCommand(value = "compaction validate", help = "Validate Compaction")
+  @ShellMethod(key = "compaction validate", value = "Validate Compaction")
   public String validateCompaction(
-      @CliOption(key = "instant", mandatory = true, help = "Compaction Instant") String compactionInstant,
-      @CliOption(key = {"parallelism"}, unspecifiedDefaultValue = "3", help = "Parallelism") String parallelism,
-      @CliOption(key = "sparkMaster", unspecifiedDefaultValue = "local", help = "Spark Master") String master,
-      @CliOption(key = "sparkMemory", unspecifiedDefaultValue = "2G", help = "executor memory") String sparkMemory,
-      @CliOption(key = {"limit"}, help = "Limit commits", unspecifiedDefaultValue = "-1") Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") boolean headerOnly)
+      @ShellOption(value = "--instant", help = "Compaction Instant") String compactionInstant,
+      @ShellOption(value = {"--parallelism"}, defaultValue = "3", help = "Parallelism") String parallelism,
+      @ShellOption(value = "--sparkMaster", defaultValue = "local", help = "Spark Master") String master,
+      @ShellOption(value = "--sparkMemory", defaultValue = "2G", help = "executor memory") String sparkMemory,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") boolean headerOnly)
       throws Exception {
-    HoodieTableMetaClient client = checkAndGetMetaClient();
     boolean initialized = HoodieCLI.initConf();
     HoodieCLI.initFS(initialized);
 
     String outputPathStr = getTmpSerializerFile();
-    Path outputPath = new Path(outputPathStr);
+    StoragePath outputPath = new StoragePath(outputPathStr);
     String output;
     try {
       String sparkPropertiesPath = Utils
-          .getDefaultPropertiesFile(scala.collection.JavaConversions.propertiesAsScalaMap(System.getProperties()));
+          .getDefaultPropertiesFile(convertJavaPropertiesToScalaMap(System.getProperties()));
       SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
-      sparkLauncher.addAppArgs(SparkCommand.COMPACT_VALIDATE.toString(), master, sparkMemory, client.getBasePath(),
+      SparkMain.addAppArgs(sparkLauncher, SparkCommand.COMPACT_VALIDATE, master, sparkMemory, HoodieCLI.basePath,
           compactionInstant, outputPathStr, parallelism);
       Process process = sparkLauncher.launch();
       InputStreamConsumer.captureOutput(process);
@@ -478,7 +472,7 @@ public class CompactionCommand implements CommandMarker {
       if (exitCode != 0) {
         return "Failed to validate compaction for " + compactionInstant;
       }
-      List<ValidationOpResult> res = deSerializeOperationResult(outputPathStr, HoodieCLI.fs);
+      List<ValidationOpResult> res = deSerializeOperationResult(outputPath, HoodieCLI.storage);
       boolean valid = res.stream().map(OperationResult::isSuccess).reduce(Boolean::logicalAnd).orElse(true);
       String message = "\n\n\t COMPACTION PLAN " + (valid ? "VALID" : "INVALID") + "\n\n";
       List<Comparable[]> rows = new ArrayList<>();
@@ -503,39 +497,38 @@ public class CompactionCommand implements CommandMarker {
           headerOnly, rows);
     } finally {
       // Delete tmp file used to serialize result
-      if (HoodieCLI.fs.exists(outputPath)) {
-        HoodieCLI.fs.delete(outputPath, false);
+      if (HoodieCLI.storage.exists(outputPath)) {
+        HoodieCLI.storage.deleteFile(outputPath);
       }
     }
     return output;
   }
 
-  @CliCommand(value = "compaction unschedule", help = "Unschedule Compaction")
+  @ShellMethod(key = "compaction unschedule", value = "Unschedule Compaction")
   public String unscheduleCompaction(
-      @CliOption(key = "instant", mandatory = true, help = "Compaction Instant") String compactionInstant,
-      @CliOption(key = {"parallelism"}, unspecifiedDefaultValue = "3", help = "Parallelism") String parallelism,
-      @CliOption(key = "sparkMaster", unspecifiedDefaultValue = "local", help = "Spark Master") String master,
-      @CliOption(key = "sparkMemory", unspecifiedDefaultValue = "2G", help = "executor memory") String sparkMemory,
-      @CliOption(key = {"skipValidation"}, help = "skip validation", unspecifiedDefaultValue = "false") boolean skipV,
-      @CliOption(key = {"dryRun"}, help = "Dry Run Mode", unspecifiedDefaultValue = "false") boolean dryRun,
-      @CliOption(key = {"limit"}, help = "Limit commits", unspecifiedDefaultValue = "-1") Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") boolean headerOnly)
+      @ShellOption(value = "--instant", help = "Compaction Instant") String compactionInstant,
+      @ShellOption(value = {"--parallelism"}, defaultValue = "3", help = "Parallelism") String parallelism,
+      @ShellOption(value = "--sparkMaster", defaultValue = "local", help = "Spark Master") String master,
+      @ShellOption(value = "--sparkMemory", defaultValue = "2G", help = "executor memory") String sparkMemory,
+      @ShellOption(value = {"--skipValidation"}, help = "skip validation", defaultValue = "false") boolean skipV,
+      @ShellOption(value = {"--dryRun"}, help = "Dry Run Mode", defaultValue = "false") boolean dryRun,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") boolean headerOnly)
       throws Exception {
-    HoodieTableMetaClient client = checkAndGetMetaClient();
     boolean initialized = HoodieCLI.initConf();
     HoodieCLI.initFS(initialized);
 
     String outputPathStr = getTmpSerializerFile();
-    Path outputPath = new Path(outputPathStr);
+    StoragePath outputPath = new StoragePath(outputPathStr);
     String output;
     try {
       String sparkPropertiesPath = Utils
-          .getDefaultPropertiesFile(scala.collection.JavaConversions.propertiesAsScalaMap(System.getProperties()));
+          .getDefaultPropertiesFile(convertJavaPropertiesToScalaMap(System.getProperties()));
       SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
-      sparkLauncher.addAppArgs(SparkCommand.COMPACT_UNSCHEDULE_PLAN.toString(), master, sparkMemory, client.getBasePath(),
+      SparkMain.addAppArgs(sparkLauncher, SparkCommand.COMPACT_UNSCHEDULE_PLAN, master, sparkMemory, HoodieCLI.basePath,
           compactionInstant, outputPathStr, parallelism, Boolean.valueOf(skipV).toString(),
           Boolean.valueOf(dryRun).toString());
       Process process = sparkLauncher.launch();
@@ -544,43 +537,42 @@ public class CompactionCommand implements CommandMarker {
       if (exitCode != 0) {
         return "Failed to unschedule compaction for " + compactionInstant;
       }
-      List<RenameOpResult> res = deSerializeOperationResult(outputPathStr, HoodieCLI.fs);
+      List<RenameOpResult> res = deSerializeOperationResult(outputPath, HoodieCLI.storage);
       output =
           getRenamesToBePrinted(res, limit, sortByField, descending, headerOnly, "unschedule pending compaction");
     } finally {
       // Delete tmp file used to serialize result
-      if (HoodieCLI.fs.exists(outputPath)) {
-        HoodieCLI.fs.delete(outputPath, false);
+      if (HoodieCLI.storage.exists(outputPath)) {
+        HoodieCLI.storage.deleteFile(outputPath);
       }
     }
     return output;
   }
 
-  @CliCommand(value = "compaction unscheduleFileId", help = "UnSchedule Compaction for a fileId")
+  @ShellMethod(key = "compaction unscheduleFileId", value = "UnSchedule Compaction for a fileId")
   public String unscheduleCompactFile(
-      @CliOption(key = "fileId", mandatory = true, help = "File Id") final String fileId,
-      @CliOption(key = "partitionPath", unspecifiedDefaultValue = "", help = "partition path") final String partitionPath,
-      @CliOption(key = "sparkMaster", unspecifiedDefaultValue = "local", help = "Spark Master") String master,
-      @CliOption(key = "sparkMemory", unspecifiedDefaultValue = "2G", help = "executor memory") String sparkMemory,
-      @CliOption(key = {"skipValidation"}, help = "skip validation", unspecifiedDefaultValue = "false") boolean skipV,
-      @CliOption(key = {"dryRun"}, help = "Dry Run Mode", unspecifiedDefaultValue = "false") boolean dryRun,
-      @CliOption(key = {"limit"}, help = "Limit commits", unspecifiedDefaultValue = "-1") Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Header Only", unspecifiedDefaultValue = "false") boolean headerOnly)
+      @ShellOption(value = "--fileId", help = "File Id") final String fileId,
+      @ShellOption(value = "--partitionPath", defaultValue = "", help = "partition path") final String partitionPath,
+      @ShellOption(value = "--sparkMaster", defaultValue = "local", help = "Spark Master") String master,
+      @ShellOption(value = "--sparkMemory", defaultValue = "2G", help = "executor memory") String sparkMemory,
+      @ShellOption(value = {"--skipValidation"}, help = "skip validation", defaultValue = "false") boolean skipV,
+      @ShellOption(value = {"--dryRun"}, help = "Dry Run Mode", defaultValue = "false") boolean dryRun,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Header Only", defaultValue = "false") boolean headerOnly)
       throws Exception {
-    HoodieTableMetaClient client = checkAndGetMetaClient();
     boolean initialized = HoodieCLI.initConf();
     HoodieCLI.initFS(initialized);
 
     String outputPathStr = getTmpSerializerFile();
-    Path outputPath = new Path(outputPathStr);
+    StoragePath outputPath = new StoragePath(outputPathStr);
     String output;
     try {
       String sparkPropertiesPath = Utils
-          .getDefaultPropertiesFile(scala.collection.JavaConversions.propertiesAsScalaMap(System.getProperties()));
+          .getDefaultPropertiesFile(convertJavaPropertiesToScalaMap(System.getProperties()));
       SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
-      sparkLauncher.addAppArgs(SparkCommand.COMPACT_UNSCHEDULE_FILE.toString(), master, sparkMemory, client.getBasePath(),
+      SparkMain.addAppArgs(sparkLauncher, SparkCommand.COMPACT_UNSCHEDULE_FILE, master, sparkMemory, HoodieCLI.basePath,
           fileId, partitionPath, outputPathStr, "1", Boolean.valueOf(skipV).toString(),
           Boolean.valueOf(dryRun).toString());
       Process process = sparkLauncher.launch();
@@ -589,44 +581,43 @@ public class CompactionCommand implements CommandMarker {
       if (exitCode != 0) {
         return "Failed to unschedule compaction for file " + fileId;
       }
-      List<RenameOpResult> res = deSerializeOperationResult(outputPathStr, HoodieCLI.fs);
+      List<RenameOpResult> res = deSerializeOperationResult(outputPath, HoodieCLI.storage);
       output = getRenamesToBePrinted(res, limit, sortByField, descending, headerOnly,
           "unschedule file from pending compaction");
     } finally {
       // Delete tmp file used to serialize result
-      if (HoodieCLI.fs.exists(outputPath)) {
-        HoodieCLI.fs.delete(outputPath, false);
+      if (HoodieCLI.storage.exists(outputPath)) {
+        HoodieCLI.storage.deleteFile(outputPath);
       }
     }
     return output;
   }
 
-  @CliCommand(value = "compaction repair", help = "Renames the files to make them consistent with the timeline as "
+  @ShellMethod(key = "compaction repair", value = "Renames the files to make them consistent with the timeline as "
       + "dictated by Hoodie metadata. Use when compaction unschedule fails partially.")
   public String repairCompaction(
-      @CliOption(key = "instant", mandatory = true, help = "Compaction Instant") String compactionInstant,
-      @CliOption(key = {"parallelism"}, unspecifiedDefaultValue = "3", help = "Parallelism") String parallelism,
-      @CliOption(key = "sparkMaster", unspecifiedDefaultValue = "local", help = "Spark Master") String master,
-      @CliOption(key = "sparkMemory", unspecifiedDefaultValue = "2G", help = "executor memory") String sparkMemory,
-      @CliOption(key = {"dryRun"}, help = "Dry Run Mode", unspecifiedDefaultValue = "false") boolean dryRun,
-      @CliOption(key = {"limit"}, help = "Limit commits", unspecifiedDefaultValue = "-1") Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") boolean headerOnly)
+      @ShellOption(value = "--instant", help = "Compaction Instant") String compactionInstant,
+      @ShellOption(value = {"--parallelism"}, defaultValue = "3", help = "Parallelism") String parallelism,
+      @ShellOption(value = "--sparkMaster", defaultValue = "local", help = "Spark Master") String master,
+      @ShellOption(value = "--sparkMemory", defaultValue = "2G", help = "executor memory") String sparkMemory,
+      @ShellOption(value = {"--dryRun"}, help = "Dry Run Mode", defaultValue = "false") boolean dryRun,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") boolean headerOnly)
       throws Exception {
-    HoodieTableMetaClient client = checkAndGetMetaClient();
     boolean initialized = HoodieCLI.initConf();
     HoodieCLI.initFS(initialized);
 
     String outputPathStr = getTmpSerializerFile();
-    Path outputPath = new Path(outputPathStr);
+    StoragePath outputPath = new StoragePath(outputPathStr);
     String output;
     try {
       String sparkPropertiesPath = Utils
-          .getDefaultPropertiesFile(scala.collection.JavaConversions.propertiesAsScalaMap(System.getProperties()));
+          .getDefaultPropertiesFile(convertJavaPropertiesToScalaMap(System.getProperties()));
       SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
-      sparkLauncher.addAppArgs(SparkCommand.COMPACT_REPAIR.toString(), master, sparkMemory, client.getBasePath(),
+      SparkMain.addAppArgs(sparkLauncher, SparkCommand.COMPACT_REPAIR, master, sparkMemory, HoodieCLI.basePath,
           compactionInstant, outputPathStr, parallelism, Boolean.valueOf(dryRun).toString());
       Process process = sparkLauncher.launch();
       InputStreamConsumer.captureOutput(process);
@@ -634,12 +625,12 @@ public class CompactionCommand implements CommandMarker {
       if (exitCode != 0) {
         return "Failed to unschedule compaction for " + compactionInstant;
       }
-      List<RenameOpResult> res = deSerializeOperationResult(outputPathStr, HoodieCLI.fs);
+      List<RenameOpResult> res = deSerializeOperationResult(outputPath, HoodieCLI.storage);
       output = getRenamesToBePrinted(res, limit, sortByField, descending, headerOnly, "repair compaction");
     } finally {
       // Delete tmp file used to serialize result
-      if (HoodieCLI.fs.exists(outputPath)) {
-        HoodieCLI.fs.delete(outputPath, false);
+      if (HoodieCLI.storage.exists(outputPath)) {
+        HoodieCLI.storage.deleteFile(outputPath);
       }
     }
     return output;

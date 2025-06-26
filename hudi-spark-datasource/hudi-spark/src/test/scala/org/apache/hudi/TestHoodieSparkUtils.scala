@@ -18,136 +18,76 @@
 
 package org.apache.hudi
 
-import org.apache.avro.generic.GenericRecord
-import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.Path
+import org.apache.hudi.common.model.HoodieRecord
 import org.apache.hudi.testutils.DataSourceTestUtils
-import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.hudi.testutils.HoodieClientTestUtils.getSparkConfForTest
+
+import org.apache.avro.generic.GenericRecord
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.types.{ArrayType, StructField, StructType}
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 
-import java.io.File
-import java.nio.file.Paths
 import scala.collection.JavaConverters
 
 class TestHoodieSparkUtils {
 
   @ParameterizedTest
-  @ValueSource(strings = Array("2.4.4", "3.1.0", "3.2.0", "3.3.0"))
+  @ValueSource(strings = Array("3.3.0", "3.3.2", "3.4.0", "3.5.0"))
   def testSparkVersionCheckers(sparkVersion: String): Unit = {
     val vsMock = new SparkVersionsSupport {
       override def getSparkVersion: String = sparkVersion
     }
 
     sparkVersion match {
-      case "2.4.4" =>
-        assertTrue(vsMock.isSpark2)
-
-        assertFalse(vsMock.isSpark3)
-        assertFalse(vsMock.isSpark3_1)
-        assertFalse(vsMock.isSpark3_0)
-        assertFalse(vsMock.isSpark3_2)
-        assertFalse(vsMock.gteqSpark3_1)
-        assertFalse(vsMock.gteqSpark3_1_3)
-        assertFalse(vsMock.gteqSpark3_2)
-
-      case "3.1.0" =>
-        assertTrue(vsMock.isSpark3)
-        assertTrue(vsMock.isSpark3_1)
-        assertTrue(vsMock.gteqSpark3_1)
-
-        assertFalse(vsMock.isSpark2)
-        assertFalse(vsMock.isSpark3_0)
-        assertFalse(vsMock.isSpark3_2)
-        assertFalse(vsMock.gteqSpark3_1_3)
-        assertFalse(vsMock.gteqSpark3_2)
-
-      case "3.2.0" =>
-        assertTrue(vsMock.isSpark3)
-        assertTrue(vsMock.isSpark3_2)
-        assertTrue(vsMock.gteqSpark3_1)
-        assertTrue(vsMock.gteqSpark3_1_3)
-        assertTrue(vsMock.gteqSpark3_2)
-
-        assertFalse(vsMock.isSpark2)
-        assertFalse(vsMock.isSpark3_0)
-        assertFalse(vsMock.isSpark3_1)
-
       case "3.3.0" =>
         assertTrue(vsMock.isSpark3)
-        assertTrue(vsMock.gteqSpark3_1)
-        assertTrue(vsMock.gteqSpark3_1_3)
-        assertTrue(vsMock.gteqSpark3_2)
+        assertTrue(vsMock.isSpark3_3)
 
-        assertFalse(vsMock.isSpark3_2)
-        assertFalse(vsMock.isSpark2)
-        assertFalse(vsMock.isSpark3_0)
-        assertFalse(vsMock.isSpark3_1)
+        assertFalse(vsMock.isSpark3_4)
+        assertFalse(vsMock.isSpark3_5)
+        assertFalse(vsMock.gteqSpark3_3_2)
+        assertFalse(vsMock.gteqSpark3_4)
+        assertFalse(vsMock.gteqSpark3_5)
+
+      case "3.3.2" =>
+        assertTrue(vsMock.isSpark3)
+        assertTrue(vsMock.isSpark3_3)
+        assertTrue(vsMock.gteqSpark3_3_2)
+
+
+        assertFalse(vsMock.isSpark3_4)
+        assertFalse(vsMock.isSpark3_5)
+        assertFalse(vsMock.gteqSpark3_4)
+        assertFalse(vsMock.gteqSpark3_5)
+
+      case "3.4.0" =>
+        assertTrue(vsMock.isSpark3)
+        assertTrue(vsMock.isSpark3_4)
+        assertTrue(vsMock.gteqSpark3_3_2)
+        assertTrue(vsMock.gteqSpark3_4)
+
+        assertFalse(vsMock.isSpark3_3)
+        assertFalse(vsMock.isSpark3_5)
+
+      case "3.5.0" =>
+        assertTrue(vsMock.isSpark3)
+        assertTrue(vsMock.isSpark3_5)
+        assertTrue(vsMock.gteqSpark3_3_2)
+        assertTrue(vsMock.gteqSpark3_4)
+        assertTrue(vsMock.gteqSpark3_5)
+
+        assertFalse(vsMock.isSpark3_3)
+        assertFalse(vsMock.isSpark3_4)
     }
-  }
-
-  @Test
-  def testGlobPaths(@TempDir tempDir: File): Unit = {
-    val folders: Seq[Path] = Seq(
-      new Path(Paths.get(tempDir.getAbsolutePath, "folder1").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, "folder2").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, ".hoodie").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, ".hoodie", "metadata").toUri)
-    )
-
-    val files: Seq[Path] = Seq(
-      new Path(Paths.get(tempDir.getAbsolutePath, "folder1", "file1").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, "folder1", "file2").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, "folder2", "file3").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, "folder2","file4").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, ".hoodie","metadata", "file5").toUri),
-      new Path(Paths.get(tempDir.getAbsolutePath, ".hoodie","metadata", "file6").toUri)
-    )
-
-    folders.foreach(folder => new File(folder.toUri).mkdir())
-    files.foreach(file => new File(file.toUri).createNewFile())
-
-    var paths = Seq(tempDir.getAbsolutePath + "/*")
-    var globbedPaths = HoodieSparkUtils.checkAndGlobPathIfNecessary(paths,
-      new Path(paths.head).getFileSystem(new Configuration()))
-    assertEquals(folders.filterNot(entry => entry.toString.contains(".hoodie"))
-      .sortWith(_.toString < _.toString), globbedPaths.sortWith(_.toString < _.toString))
-
-    paths = Seq(tempDir.getAbsolutePath + "/*/*")
-    globbedPaths = HoodieSparkUtils.checkAndGlobPathIfNecessary(paths,
-      new Path(paths.head).getFileSystem(new Configuration()))
-    assertEquals(files.filterNot(entry => entry.toString.contains(".hoodie"))
-      .sortWith(_.toString < _.toString), globbedPaths.sortWith(_.toString < _.toString))
-
-    paths = Seq(tempDir.getAbsolutePath + "/folder1/*")
-    globbedPaths = HoodieSparkUtils.checkAndGlobPathIfNecessary(paths,
-      new Path(paths.head).getFileSystem(new Configuration()))
-    assertEquals(Seq(files(0), files(1)).sortWith(_.toString < _.toString),
-      globbedPaths.sortWith(_.toString < _.toString))
-
-    paths = Seq(tempDir.getAbsolutePath + "/folder2/*")
-    globbedPaths = HoodieSparkUtils.checkAndGlobPathIfNecessary(paths,
-      new Path(paths.head).getFileSystem(new Configuration()))
-    assertEquals(Seq(files(2), files(3)).sortWith(_.toString < _.toString),
-      globbedPaths.sortWith(_.toString < _.toString))
-
-    paths = Seq(tempDir.getAbsolutePath + "/folder1/*", tempDir.getAbsolutePath + "/folder2/*")
-    globbedPaths = HoodieSparkUtils.checkAndGlobPathIfNecessary(paths,
-      new Path(paths.head).getFileSystem(new Configuration()))
-    assertEquals(files.filterNot(entry => entry.toString.contains(".hoodie"))
-      .sortWith(_.toString < _.toString), globbedPaths.sortWith(_.toString < _.toString))
   }
 
   @Test
   def testCreateRddSchemaEvol(): Unit = {
     val spark = SparkSession.builder
-      .appName("Hoodie Datasource test")
-      .master("local[2]")
-      .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .config(getSparkConfForTest("Hoodie Datasource test"))
       .getOrCreate
 
     val schema = DataSourceTestUtils.getStructTypeExampleSchema
@@ -181,9 +121,7 @@ class TestHoodieSparkUtils {
   @Test
   def testCreateRddWithNestedSchemas(): Unit = {
     val spark = SparkSession.builder
-      .appName("Hoodie Datasource test")
-      .master("local[2]")
-      .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .config(getSparkConfForTest("Hoodie Datasource test"))
       .getOrCreate
 
     val innerStruct1 = new StructType().add("innerKey","string",false).add("innerValue", "long", true)
@@ -252,12 +190,49 @@ class TestHoodieSparkUtils {
       genRecRDD6.collect()
       fail("createRdd should fail, because records don't have a column which is not nullable in the passed in schema")
     } catch {
-      case e: Exception =>
-        assertTrue(e.getMessage.contains("null of string in field new_nested_col of test_namespace.test_struct_name.nullableInnerStruct of union"))
+      case e: Exception => assertTrue(e.getMessage.contains("Field nullableInnerStruct.new_nested_col has no default value and is non-nullable"))
     }
     spark.stop()
   }
 
   def convertRowListToSeq(inputList: java.util.List[Row]): Seq[Row] =
     JavaConverters.asScalaIteratorConverter(inputList.iterator).asScala.toSeq
+}
+
+object TestHoodieSparkUtils {
+
+
+  def setNullableRec(structType: StructType, columnName: Array[String], index: Int): StructType = {
+    StructType(structType.map {
+      case StructField(name, StructType(fields), nullable, metadata) if name.equals(columnName(index)) =>
+        StructField(name, setNullableRec(StructType(fields), columnName, index + 1), nullable, metadata)
+      case StructField(name, ArrayType(StructType(fields), _), nullable, metadata) if name.equals(columnName(index)) =>
+        StructField(name, ArrayType(setNullableRec(StructType(fields), columnName, index + 1)), nullable, metadata)
+      case StructField(name, dataType, _, metadata) if name.equals(columnName(index)) =>
+        StructField(name, dataType, nullable = false, metadata)
+      case y: StructField => y
+    })
+  }
+
+  def getSchemaColumnNotNullable(structType: StructType, columnName: String): StructType = {
+    setNullableRec(structType, columnName.split('.'), 0)
+  }
+
+  def setColumnNotNullable(df: DataFrame, columnName: String): DataFrame = {
+    // get schema
+    val schema = df.schema
+    // modify [[StructField] with name `cn`
+    val newSchema = setNullableRec(schema, columnName.split('.'), 0)
+    // apply new schema
+    df.sqlContext.createDataFrame(df.rdd, newSchema)
+  }
+
+  /**
+   * Utility method for dropping all hoodie meta related columns.
+   */
+  def dropMetaFields(df: DataFrame): DataFrame = {
+    df.drop(HoodieRecord.HOODIE_META_COLUMNS.get(0)).drop(HoodieRecord.HOODIE_META_COLUMNS.get(1))
+      .drop(HoodieRecord.HOODIE_META_COLUMNS.get(2)).drop(HoodieRecord.HOODIE_META_COLUMNS.get(3))
+      .drop(HoodieRecord.HOODIE_META_COLUMNS.get(4))
+  }
 }

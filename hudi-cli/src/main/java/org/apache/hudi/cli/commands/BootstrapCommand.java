@@ -33,10 +33,9 @@ import org.apache.hudi.utilities.UtilHelpers;
 
 import org.apache.spark.launcher.SparkLauncher;
 import org.apache.spark.util.Utils;
-import org.springframework.shell.core.CommandMarker;
-import org.springframework.shell.core.annotation.CliCommand;
-import org.springframework.shell.core.annotation.CliOption;
-import org.springframework.stereotype.Component;
+import org.springframework.shell.standard.ShellComponent;
+import org.springframework.shell.standard.ShellMethod;
+import org.springframework.shell.standard.ShellOption;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -51,51 +50,60 @@ import scala.collection.JavaConverters;
 /**
  * CLI command to perform bootstrap action & display bootstrap index.
  */
-@Component
-public class BootstrapCommand implements CommandMarker {
+@ShellComponent
+public class BootstrapCommand {
 
-  @CliCommand(value = "bootstrap run", help = "Run a bootstrap action for current Hudi table")
+  @ShellMethod(key = "bootstrap run", value = "Run a bootstrap action for current Hudi table")
   public String bootstrap(
-      @CliOption(key = {"srcPath"}, mandatory = true, help = "Bootstrap source data path of the table") final String srcPath,
-      @CliOption(key = {"targetPath"}, mandatory = true,
-          help = "Base path for the target hoodie table") final String targetPath,
-      @CliOption(key = {"tableName"}, mandatory = true, help = "Hoodie table name") final String tableName,
-      @CliOption(key = {"tableType"}, mandatory = true, help = "Hoodie table type") final String tableType,
-      @CliOption(key = {"rowKeyField"}, mandatory = true, help = "Record key columns for bootstrap data") final String rowKeyField,
-      @CliOption(key = {"partitionPathField"}, unspecifiedDefaultValue = "",
+      @ShellOption(value = {"--srcPath"}, help = "Bootstrap source data path of the table") final String srcPath,
+      @ShellOption(value = {"--targetPath"}, help = "Base path for the target hoodie table") final String targetPath,
+      @ShellOption(value = {"--tableName"}, help = "Hoodie table name") final String tableName,
+      @ShellOption(value = {"--tableType"}, help = "Hoodie table type") final String tableType,
+      @ShellOption(value = {"--rowKeyField"}, help = "Record key columns for bootstrap data") final String rowKeyField,
+      @ShellOption(value = {"--partitionPathField"}, defaultValue = "",
           help = "Partition fields for bootstrap source data") final String partitionPathField,
-      @CliOption(key = {"bootstrapIndexClass"}, unspecifiedDefaultValue = "org.apache.hudi.common.bootstrap.index.HFileBootstrapIndex",
+      @ShellOption(value = {"--bootstrapIndexClass"}, defaultValue = "org.apache.hudi.common.bootstrap.index.hfile.HFileBootstrapIndex",
           help = "Bootstrap Index Class") final String bootstrapIndexClass,
-      @CliOption(key = {"selectorClass"}, unspecifiedDefaultValue = "org.apache.hudi.client.bootstrap.selector.MetadataOnlyBootstrapModeSelector",
+      @ShellOption(value = {"--selectorClass"}, defaultValue = "org.apache.hudi.client.bootstrap.selector.MetadataOnlyBootstrapModeSelector",
           help = "Selector class for bootstrap") final String selectorClass,
-      @CliOption(key = {"keyGeneratorClass"}, unspecifiedDefaultValue = "org.apache.hudi.keygen.SimpleKeyGenerator",
+      @ShellOption(value = {"--keyGeneratorClass"}, defaultValue = "org.apache.hudi.keygen.SimpleKeyGenerator",
           help = "Key generator class for bootstrap") final String keyGeneratorClass,
-      @CliOption(key = {"fullBootstrapInputProvider"}, unspecifiedDefaultValue = "org.apache.hudi.bootstrap.SparkParquetBootstrapDataProvider",
+      @ShellOption(value = {"--fullBootstrapInputProvider"}, defaultValue = "org.apache.hudi.bootstrap.SparkParquetBootstrapDataProvider",
           help = "Class for Full bootstrap input provider") final String fullBootstrapInputProvider,
-      @CliOption(key = {"schemaProviderClass"}, unspecifiedDefaultValue = "",
+      @ShellOption(value = {"--schemaProviderClass"}, defaultValue = "",
           help = "SchemaProvider to attach schemas to bootstrap source data") final String schemaProviderClass,
-      @CliOption(key = {"payloadClass"}, unspecifiedDefaultValue = "org.apache.hudi.common.model.OverwriteWithLatestAvroPayload",
-          help = "Payload Class") final String payloadClass,
-      @CliOption(key = {"parallelism"}, unspecifiedDefaultValue = "1500", help = "Bootstrap writer parallelism") final int parallelism,
-      @CliOption(key = {"sparkMaster"}, unspecifiedDefaultValue = "", help = "Spark Master") String master,
-      @CliOption(key = {"sparkMemory"}, unspecifiedDefaultValue = "4G", help = "Spark executor memory") final String sparkMemory,
-      @CliOption(key = {"enableHiveSync"}, unspecifiedDefaultValue = "false", help = "Enable Hive sync") final Boolean enableHiveSync,
-      @CliOption(key = {"propsFilePath"}, help = "path to properties file on localfs or dfs with configurations for hoodie client for importing",
-          unspecifiedDefaultValue = "") final String propsFilePath,
-      @CliOption(key = {"hoodieConfigs"}, help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
-          unspecifiedDefaultValue = "") final String[] configs)
+      @ShellOption(value = {"--payloadClass"}, defaultValue = "",
+          help = "Payload Class (deprecated). Use `--merge-mode` to specify the equivalent payload update behavior.") final String payloadClass,
+      @ShellOption(value = {"--merge-mode", "--record-merge-mode"}, defaultValue = "",
+          help = "Merge mode to use. 'EVENT_TIME_ORDERING', 'COMMIT_TIME_ORDERING', "
+              + "or 'CUSTOM' if you want to set a custom merge strategy ID and implementation.") final String recordMergeMode,
+      @ShellOption(value = {"--merge-strategy-id", "--record-merge-strategy-id"}, defaultValue = "",
+          help = "ID of the merge strategy to use. Only set when using 'CUSTOM' merge mode") final String recordMergeStrategyId,
+      @ShellOption(value = {"--merge-impl-classes", "--record-merge-custom-implementation-classes"}, defaultValue = "",
+          help = "Comma separated list of classes that implement the record merge strategy") final String recordMergeImplClasses,
+      @ShellOption(value = {"--parallelism"}, defaultValue = "1500", help = "Bootstrap writer parallelism") final int parallelism,
+      @ShellOption(value = {"--sparkMaster"}, defaultValue = "", help = "Spark Master") String master,
+      @ShellOption(value = {"--sparkMemory"}, defaultValue = "4G", help = "Spark executor memory") final String sparkMemory,
+      @ShellOption(value = {"--enableHiveSync"}, defaultValue = "false", help = "Enable Hive sync") final Boolean enableHiveSync,
+      @ShellOption(value = {"--propsFilePath"}, help = "path to properties file on localfs or dfs with configurations for hoodie client for importing",
+          defaultValue = "") final String propsFilePath,
+      @ShellOption(value = {"--hoodieConfigs"}, help = "Any configuration that can be set in the properties file can be passed here in the form of an array",
+          defaultValue = "") final String[] configs)
       throws IOException, InterruptedException, URISyntaxException {
+
+    if (targetPath.equals(srcPath)) {
+      throw new IllegalArgumentException("srcPath and targetPath must be different");
+    }
 
     String sparkPropertiesPath =
         Utils.getDefaultPropertiesFile(JavaConverters.mapAsScalaMapConverter(System.getenv()).asScala());
 
     SparkLauncher sparkLauncher = SparkUtil.initLauncher(sparkPropertiesPath);
 
-    String cmd = SparkCommand.BOOTSTRAP.toString();
-
-    sparkLauncher.addAppArgs(cmd, master, sparkMemory, tableName, tableType, targetPath, srcPath, rowKeyField,
+    SparkMain.addAppArgs(sparkLauncher, SparkCommand.BOOTSTRAP, master, sparkMemory, tableName, tableType, targetPath, srcPath, rowKeyField,
         partitionPathField, String.valueOf(parallelism), schemaProviderClass, bootstrapIndexClass, selectorClass,
-        keyGeneratorClass, fullBootstrapInputProvider, payloadClass, String.valueOf(enableHiveSync), propsFilePath);
+        keyGeneratorClass, fullBootstrapInputProvider, recordMergeMode, payloadClass, recordMergeStrategyId, recordMergeImplClasses,
+        String.valueOf(enableHiveSync), propsFilePath);
     UtilHelpers.validateAndAddProperties(configs, sparkLauncher);
     Process process = sparkLauncher.launch();
     InputStreamConsumer.captureOutput(process);
@@ -106,14 +114,14 @@ public class BootstrapCommand implements CommandMarker {
     return "Bootstrapped source data as Hudi dataset";
   }
 
-  @CliCommand(value = "bootstrap index showmapping", help = "Show bootstrap index mapping")
+  @ShellMethod(key = "bootstrap index showmapping", value = "Show bootstrap index mapping")
   public String showBootstrapIndexMapping(
-      @CliOption(key = {"partitionPath"}, unspecifiedDefaultValue = "", help = "A valid partition path") String partitionPath,
-      @CliOption(key = {"fileIds"}, unspecifiedDefaultValue = "", help = "Valid fileIds split by comma") String fileIds,
-      @CliOption(key = {"limit"}, unspecifiedDefaultValue = "-1", help = "Limit rows to be displayed") Integer limit,
-      @CliOption(key = {"sortBy"}, unspecifiedDefaultValue = "", help = "Sorting Field") final String sortByField,
-      @CliOption(key = {"desc"}, unspecifiedDefaultValue = "false", help = "Ordering") final boolean descending,
-      @CliOption(key = {"headeronly"}, unspecifiedDefaultValue = "false", help = "Print Header Only") final boolean headerOnly) {
+      @ShellOption(value = {"--partitionPath"}, defaultValue = "", help = "A valid partition path") String partitionPath,
+      @ShellOption(value = {"--fileIds"}, defaultValue = "", help = "Valid fileIds split by comma") String fileIds,
+      @ShellOption(value = {"--limit"}, defaultValue = "-1", help = "Limit rows to be displayed") Integer limit,
+      @ShellOption(value = {"--sortBy"}, defaultValue = "", help = "Sorting Field") final String sortByField,
+      @ShellOption(value = {"--desc"}, defaultValue = "false", help = "Ordering") final boolean descending,
+      @ShellOption(value = {"--headeronly"}, defaultValue = "false", help = "Print Header Only") final boolean headerOnly) {
 
     if (partitionPath.isEmpty() && !fileIds.isEmpty()) {
       throw new IllegalStateException("PartitionPath is mandatory when passing fileIds.");
@@ -151,7 +159,7 @@ public class BootstrapCommand implements CommandMarker {
         limit, headerOnly, rows);
   }
 
-  @CliCommand(value = "bootstrap index showpartitions", help = "Show bootstrap indexed partitions")
+  @ShellMethod(key = "bootstrap index showpartitions", value = "Show bootstrap indexed partitions")
   public String showBootstrapIndexPartitions() {
 
     BootstrapIndex.IndexReader indexReader = createBootstrapIndexReader();

@@ -19,20 +19,32 @@
 package org.apache.hudi.client.common;
 
 import org.apache.hudi.client.FlinkTaskContextSupplier;
-import org.apache.hudi.common.config.SerializableConfiguration;
 import org.apache.hudi.common.data.HoodieAccumulator;
 import org.apache.hudi.common.data.HoodieAtomicLongAccumulator;
 import org.apache.hudi.common.data.HoodieData;
+import org.apache.hudi.common.data.HoodieData.HoodieDataCacheKey;
 import org.apache.hudi.common.data.HoodieListData;
+import org.apache.hudi.common.data.HoodieListPairData;
+import org.apache.hudi.common.data.HoodiePairData;
+import org.apache.hudi.common.engine.AvroReaderContextFactory;
 import org.apache.hudi.common.engine.EngineProperty;
 import org.apache.hudi.common.engine.HoodieEngineContext;
+import org.apache.hudi.common.engine.ReaderContextFactory;
 import org.apache.hudi.common.engine.TaskContextSupplier;
 import org.apache.hudi.common.function.SerializableBiFunction;
 import org.apache.hudi.common.function.SerializableConsumer;
 import org.apache.hudi.common.function.SerializableFunction;
 import org.apache.hudi.common.function.SerializablePairFlatMapFunction;
 import org.apache.hudi.common.function.SerializablePairFunction;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.common.util.Functions;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.ReflectionUtils;
+import org.apache.hudi.common.util.collection.ImmutablePair;
+import org.apache.hudi.common.util.collection.Pair;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.storage.StorageConfiguration;
+import org.apache.hudi.util.FlinkClientUtil;
 
 import org.apache.flink.api.common.functions.RuntimeContext;
 
@@ -44,10 +56,6 @@ import java.util.Objects;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
-import org.apache.hudi.common.util.collection.ImmutablePair;
-import org.apache.hudi.common.util.collection.Pair;
-import org.apache.hudi.util.FlinkClientUtil;
 
 import static org.apache.hudi.common.function.FunctionWrapper.throwingFlatMapToPairWrapper;
 import static org.apache.hudi.common.function.FunctionWrapper.throwingFlatMapWrapper;
@@ -65,15 +73,19 @@ public class HoodieFlinkEngineContext extends HoodieEngineContext {
   private final RuntimeContext runtimeContext;
 
   private HoodieFlinkEngineContext() {
-    this(new SerializableConfiguration(FlinkClientUtil.getHadoopConf()), new DefaultTaskContextSupplier());
+    this(HadoopFSUtils.getStorageConf(FlinkClientUtil.getHadoopConf()), new DefaultTaskContextSupplier());
+  }
+
+  public HoodieFlinkEngineContext(org.apache.hadoop.conf.Configuration hadoopConf) {
+    this(HadoopFSUtils.getStorageConf(hadoopConf), new DefaultTaskContextSupplier());
   }
 
   public HoodieFlinkEngineContext(TaskContextSupplier taskContextSupplier) {
-    this(new SerializableConfiguration(FlinkClientUtil.getHadoopConf()), taskContextSupplier);
+    this(HadoopFSUtils.getStorageConf(FlinkClientUtil.getHadoopConf()), taskContextSupplier);
   }
 
-  public HoodieFlinkEngineContext(SerializableConfiguration hadoopConf, TaskContextSupplier taskContextSupplier) {
-    super(hadoopConf, taskContextSupplier);
+  public HoodieFlinkEngineContext(StorageConfiguration<?> storageConf, TaskContextSupplier taskContextSupplier) {
+    super(storageConf, taskContextSupplier);
     this.runtimeContext = ((FlinkTaskContextSupplier) taskContextSupplier).getFlinkRuntimeContext();
   }
 
@@ -85,6 +97,11 @@ public class HoodieFlinkEngineContext extends HoodieEngineContext {
   @Override
   public <T> HoodieData<T> emptyHoodieData() {
     return HoodieListData.eager(Collections.emptyList());
+  }
+
+  @Override
+  public <K, V> HoodiePairData<K, V> emptyHoodiePairData() {
+    return HoodieListPairData.eager(Collections.emptyList());
   }
 
   @Override
@@ -160,6 +177,45 @@ public class HoodieFlinkEngineContext extends HoodieEngineContext {
   @Override
   public void setJobStatus(String activeModule, String activityDescription) {
     // no operation for now
+  }
+
+  @Override
+  public void putCachedDataIds(HoodieDataCacheKey cacheKey, int... ids) {
+    // no operation for now
+  }
+
+  @Override
+  public List<Integer> getCachedDataIds(HoodieDataCacheKey cacheKey) {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public List<Integer> removeCachedDataIds(HoodieDataCacheKey cacheKey) {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public void cancelJob(String jobId) {
+    // no operation for now
+  }
+
+  @Override
+  public void cancelAllJobs() {
+    // no operation for now
+  }
+
+  @Override
+  public <I, O> O aggregate(HoodieData<I> data, O zeroValue, Functions.Function2<O, I, O> seqOp, Functions.Function2<O, O, O> combOp) {
+    return data.collectAsList().stream().parallel().reduce(zeroValue, seqOp::apply, combOp::apply);
+  }
+
+  @Override
+  public ReaderContextFactory<?> getReaderContextFactory(HoodieTableMetaClient metaClient) {
+    // metadata table reads are only supported by the AvroReaderContext.
+    if (metaClient.isMetadataTable()) {
+      return new AvroReaderContextFactory(metaClient);
+    }
+    return (ReaderContextFactory<?>) ReflectionUtils.loadClass("org.apache.hudi.table.format.FlinkReaderContextFactory", metaClient);
   }
 
   /**

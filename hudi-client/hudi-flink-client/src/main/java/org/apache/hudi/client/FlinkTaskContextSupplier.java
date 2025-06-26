@@ -30,7 +30,7 @@ import java.util.function.Supplier;
  * Flink task context supplier.
  */
 public class FlinkTaskContextSupplier extends TaskContextSupplier {
-  private RuntimeContext flinkRuntimeContext;
+  private final RuntimeContext flinkRuntimeContext;
 
   public FlinkTaskContextSupplier(RuntimeContext flinkRuntimeContext) {
     this.flinkRuntimeContext = flinkRuntimeContext;
@@ -61,5 +61,15 @@ public class FlinkTaskContextSupplier extends TaskContextSupplier {
     // no operation for now
     return Option.empty();
   }
-  
+
+  @Override
+  public Supplier<Integer> getTaskAttemptNumberSupplier() {
+    return () -> -1;
+  }
+
+  @Override
+  public Supplier<Integer> getStageAttemptNumberSupplier() {
+    return () -> -1;
+  }
+
 }

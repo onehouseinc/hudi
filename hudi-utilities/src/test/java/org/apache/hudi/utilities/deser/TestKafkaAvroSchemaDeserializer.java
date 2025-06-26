@@ -21,7 +21,6 @@ package org.apache.hudi.utilities.deser;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.utilities.sources.AvroKafkaSource;
 import org.apache.hudi.utilities.sources.helpers.SchemaTestProvider;
-import org.apache.hudi.utilities.testutils.UtilitiesTestBase;
 
 import io.confluent.kafka.schemaregistry.client.MockSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
@@ -45,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 /**
  * Tests {@link KafkaAvroSchemaDeserializer}.
  */
-public class TestKafkaAvroSchemaDeserializer extends UtilitiesTestBase {
+public class TestKafkaAvroSchemaDeserializer {
 
   private final SchemaRegistryClient schemaRegistry;
   private final KafkaAvroSerializer avroSerializer;
@@ -94,7 +93,7 @@ public class TestKafkaAvroSchemaDeserializer extends UtilitiesTestBase {
   }
 
   /**
-   * Tests {@link KafkaAvroSchemaDeserializer#deserialize(Boolean, String, Boolean, byte[], Schema)}.
+   * Tests {@link KafkaAvroSchemaDeserializer#deserialize(String, Boolean, byte[], Schema)}.
    */
   @Test
   public void testKafkaAvroSchemaDeserializer() {
@@ -106,7 +105,7 @@ public class TestKafkaAvroSchemaDeserializer extends UtilitiesTestBase {
     avroDeserializer.configure(new HashMap(config), false);
     bytesOrigRecord = avroSerializer.serialize(topic, avroRecord);
     // record is serialized in orig schema and deserialized using same schema.
-    assertEquals(avroRecord, avroDeserializer.deserialize(false, topic, false, bytesOrigRecord, origSchema));
+    assertEquals(avroRecord, avroDeserializer.deserialize(topic, false, bytesOrigRecord, origSchema));
 
     IndexedRecord avroRecordWithAllField = createExtendUserRecord();
     byte[] bytesExtendedRecord = avroSerializer.serialize(topic, avroRecordWithAllField);
@@ -116,12 +115,12 @@ public class TestKafkaAvroSchemaDeserializer extends UtilitiesTestBase {
     avroDeserializer = new KafkaAvroSchemaDeserializer(schemaRegistry, new HashMap(config));
     avroDeserializer.configure(new HashMap(config), false);
     // record is serialized w/ evolved schema, and deserialized w/ evolved schema
-    IndexedRecord avroRecordWithAllFieldActual = (IndexedRecord) avroDeserializer.deserialize(false, topic, false, bytesExtendedRecord, evolSchema);
+    IndexedRecord avroRecordWithAllFieldActual = (IndexedRecord) avroDeserializer.deserialize(topic, false, bytesExtendedRecord, evolSchema);
     assertEquals(avroRecordWithAllField, avroRecordWithAllFieldActual);
     assertEquals(avroRecordWithAllFieldActual.getSchema(), evolSchema);
 
     // read old record w/ evolved schema.
-    IndexedRecord actualRec = (IndexedRecord) avroDeserializer.deserialize(false, topic, false, bytesOrigRecord, origSchema);
+    IndexedRecord actualRec = (IndexedRecord) avroDeserializer.deserialize(topic, false, bytesOrigRecord, origSchema);
     // record won't be equal to original record as we read w/ evolved schema. "age" will be added w/ default value of null
     assertNotEquals(avroRecord, actualRec);
     GenericRecord genericRecord = (GenericRecord) actualRec;

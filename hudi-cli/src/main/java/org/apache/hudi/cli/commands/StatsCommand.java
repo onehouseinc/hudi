@@ -28,17 +28,16 @@ import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.util.NumericUtils;
+import org.apache.hudi.storage.HoodieStorage;
+import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.storage.StoragePathInfo;
 
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Snapshot;
 import com.codahale.metrics.UniformReservoir;
-import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.springframework.shell.core.CommandMarker;
-import org.springframework.shell.core.annotation.CliCommand;
-import org.springframework.shell.core.annotation.CliOption;
-import org.springframework.stereotype.Component;
+import org.springframework.shell.standard.ShellComponent;
+import org.springframework.shell.standard.ShellMethod;
+import org.springframework.shell.standard.ShellOption;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
@@ -47,42 +46,40 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
  * CLI command to displays stats options.
  */
-@Component
-public class StatsCommand implements CommandMarker {
+@ShellComponent
+public class StatsCommand {
 
   public static final int MAX_FILES = 1000000;
 
-  @CliCommand(value = "stats wa", help = "Write Amplification. Ratio of how many records were upserted to how many "
+  @ShellMethod(key = "stats wa", value = "Write Amplification. Ratio of how many records were upserted to how many "
       + "records were actually written")
   public String writeAmplificationStats(
-      @CliOption(key = {"limit"}, help = "Limit commits", unspecifiedDefaultValue = "-1") final Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") final String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") final boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") final boolean headerOnly)
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") final Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") final String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") final boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") final boolean headerOnly)
       throws IOException {
 
     long totalRecordsUpserted = 0;
     long totalRecordsWritten = 0;
 
     HoodieActiveTimeline activeTimeline = HoodieCLI.getTableMetaClient().getActiveTimeline();
-    HoodieTimeline timeline = activeTimeline.getCommitTimeline().filterCompletedInstants();
+    HoodieTimeline timeline = activeTimeline.getCommitAndReplaceTimeline().filterCompletedInstants();
 
     List<Comparable[]> rows = new ArrayList<>();
     DecimalFormat df = new DecimalFormat("#.00");
-    for (HoodieInstant instantTime : timeline.getInstants().collect(Collectors.toList())) {
+    for (HoodieInstant instant : timeline.getInstants()) {
       String waf = "0";
-      HoodieCommitMetadata commit = HoodieCommitMetadata.fromBytes(activeTimeline.getInstantDetails(instantTime).get(),
-          HoodieCommitMetadata.class);
+      HoodieCommitMetadata commit = activeTimeline.readCommitMetadata(instant);
       if (commit.fetchTotalUpdateRecordsWritten() > 0) {
         waf = df.format((float) commit.fetchTotalRecordsWritten() / commit.fetchTotalUpdateRecordsWritten());
       }
-      rows.add(new Comparable[] {instantTime.getTimestamp(), commit.fetchTotalUpdateRecordsWritten(),
+      rows.add(new Comparable[] {instant.requestedTime(), commit.fetchTotalUpdateRecordsWritten(),
           commit.fetchTotalRecordsWritten(), waf});
       totalRecordsUpserted += commit.fetchTotalUpdateRecordsWritten();
       totalRecordsWritten += commit.fetchTotalRecordsWritten();
@@ -105,27 +102,29 @@ public class StatsCommand implements CommandMarker {
         s.getMax(), s.size(), s.getStdDev()};
   }
 
-  @CliCommand(value = "stats filesizes", help = "File Sizes. Display summary stats on sizes of files")
+  @ShellMethod(key = "stats filesizes", value = "File Sizes. Display summary stats on sizes of files")
   public String fileSizeStats(
-      @CliOption(key = {"partitionPath"}, help = "regex to select files, eg: 2016/08/02",
-          unspecifiedDefaultValue = "*/*/*") final String globRegex,
-      @CliOption(key = {"limit"}, help = "Limit commits", unspecifiedDefaultValue = "-1") final Integer limit,
-      @CliOption(key = {"sortBy"}, help = "Sorting Field", unspecifiedDefaultValue = "") final String sortByField,
-      @CliOption(key = {"desc"}, help = "Ordering", unspecifiedDefaultValue = "false") final boolean descending,
-      @CliOption(key = {"headeronly"}, help = "Print Header Only",
-          unspecifiedDefaultValue = "false") final boolean headerOnly)
+      @ShellOption(value = {"--partitionPath"}, help = "regex to select files, eg: 2016/08/02",
+          defaultValue = "*/*/*") final String globRegex,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") final Integer limit,
+      @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") final String sortByField,
+      @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") final boolean descending,
+      @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
+              defaultValue = "false") final boolean headerOnly)
       throws IOException {
 
-    FileSystem fs = HoodieCLI.fs;
-    String globPath = String.format("%s/%s/*", HoodieCLI.getTableMetaClient().getBasePath(), globRegex);
-    List<FileStatus> statuses = FSUtils.getGlobStatusExcludingMetaFolder(fs, new Path(globPath));
+    HoodieStorage storage = HoodieCLI.storage;
+    String globPath =
+        String.format("%s/%s/*", HoodieCLI.getTableMetaClient().getBasePath(), globRegex);
+    List<StoragePathInfo> pathInfoList = FSUtils.getGlobStatusExcludingMetaFolder(storage,
+        new StoragePath(globPath));
 
     // max, min, #small files < 10MB, 50th, avg, 95th
     Histogram globalHistogram = new Histogram(new UniformReservoir(MAX_FILES));
     HashMap<String, Histogram> commitHistoMap = new HashMap<>();
-    for (FileStatus fileStatus : statuses) {
-      String instantTime = FSUtils.getCommitTime(fileStatus.getPath().getName());
-      long sz = fileStatus.getLen();
+    for (StoragePathInfo pathInfo : pathInfoList) {
+      String instantTime = FSUtils.getCommitTime(pathInfo.getPath().getName());
+      long sz = pathInfo.getLength();
       if (!commitHistoMap.containsKey(instantTime)) {
         commitHistoMap.put(instantTime, new Histogram(new UniformReservoir(MAX_FILES)));
       }

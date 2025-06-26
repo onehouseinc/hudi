@@ -19,6 +19,7 @@
 package org.apache.hudi.client.model;
 
 import org.apache.hudi.common.model.HoodieRecord;
+
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
 import org.apache.spark.sql.catalyst.util.ArrayData;
@@ -28,8 +29,6 @@ import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.types.StringType$;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
-
-import java.util.Arrays;
 
 /**
  * Hudi internal implementation of the {@link InternalRow} allowing to extend arbitrary
@@ -84,7 +83,7 @@ public class HoodieInternalRow extends InternalRow {
     this.sourceContainsMetaFields = sourceContainsMetaFields;
   }
 
-  private HoodieInternalRow(UTF8String[] metaFields,
+  public HoodieInternalRow(UTF8String[] metaFields,
                            InternalRow sourceRow,
                            boolean sourceContainsMetaFields) {
     this.metaFields = metaFields;
@@ -94,7 +93,11 @@ public class HoodieInternalRow extends InternalRow {
 
   @Override
   public int numFields() {
-    return sourceRow.numFields();
+    if (sourceContainsMetaFields) {
+      return sourceRow.numFields();
+    } else {
+      return sourceRow.numFields() + metaFields.length;
+    }
   }
 
   @Override
@@ -227,7 +230,11 @@ public class HoodieInternalRow extends InternalRow {
 
   @Override
   public InternalRow copy() {
-    return new HoodieInternalRow(Arrays.copyOf(metaFields, metaFields.length), sourceRow.copy(), sourceContainsMetaFields);
+    UTF8String[] copyMetaFields = new UTF8String[metaFields.length];
+    for (int i = 0; i < metaFields.length; i++) {
+      copyMetaFields[i] = metaFields[i] != null ? metaFields[i].copy() : null;
+    }
+    return new HoodieInternalRow(copyMetaFields, sourceRow == null ? null : sourceRow.copy(), sourceContainsMetaFields);
   }
 
   private int rebaseOrdinal(int ordinal) {

@@ -19,11 +19,9 @@
 package org.apache.hudi.sink;
 
 import org.apache.hudi.client.HoodieFlinkWriteClient;
-import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.configuration.FlinkOptions;
-import org.apache.hudi.configuration.OptionsResolver;
 import org.apache.hudi.sink.utils.NonThrownExecutor;
-import org.apache.hudi.util.StreamerUtil;
+import org.apache.hudi.util.FlinkWriteClients;
 
 import org.apache.flink.api.common.functions.AbstractRichFunction;
 import org.apache.flink.api.common.state.CheckpointListener;
@@ -52,7 +50,7 @@ public class CleanFunction<T> extends AbstractRichFunction
 
   private NonThrownExecutor executor;
 
-  private volatile boolean isCleaning;
+  protected volatile boolean isCleaning;
 
   public CleanFunction(Configuration conf) {
     this.conf = conf;
@@ -61,15 +59,17 @@ public class CleanFunction<T> extends AbstractRichFunction
   @Override
   public void open(Configuration parameters) throws Exception {
     super.open(parameters);
+    this.writeClient = FlinkWriteClients.createWriteClient(conf, getRuntimeContext());
+    this.executor = NonThrownExecutor.builder(LOG).waitForTasksFinish(true).build();
     if (conf.getBoolean(FlinkOptions.CLEAN_ASYNC_ENABLED)) {
-      this.writeClient = StreamerUtil.createWriteClient(conf, getRuntimeContext());
-      this.executor = NonThrownExecutor.builder(LOG).waitForTasksFinish(true).build();
-
-      if (OptionsResolver.isInsertOverwrite(conf)) {
-        String instantTime = HoodieActiveTimeline.createNewInstantTime();
-        LOG.info(String.format("exec sync clean with instant time %s...", instantTime));
-        executor.execute(() -> writeClient.clean(instantTime), "wait for sync cleaning finish");
-      }
+      executor.execute(() -> {
+        this.isCleaning = true;
+        try {
+          this.writeClient.clean();
+        } finally {
+          this.isCleaning = false;
+        }
+      }, "wait for cleaning finish");
     }
   }
 

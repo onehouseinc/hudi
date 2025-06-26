@@ -18,29 +18,81 @@
 
 package org.apache.hudi.avro;
 
+import org.apache.hudi.avro.model.BooleanWrapper;
+import org.apache.hudi.avro.model.BytesWrapper;
+import org.apache.hudi.avro.model.DateWrapper;
+import org.apache.hudi.avro.model.DecimalWrapper;
+import org.apache.hudi.avro.model.DoubleWrapper;
+import org.apache.hudi.avro.model.FloatWrapper;
+import org.apache.hudi.avro.model.IntWrapper;
+import org.apache.hudi.avro.model.LocalDateWrapper;
+import org.apache.hudi.avro.model.LongWrapper;
+import org.apache.hudi.avro.model.StringWrapper;
+import org.apache.hudi.avro.model.TimestampMicrosWrapper;
+import org.apache.hudi.common.model.HoodieAvroRecord;
+import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
+import org.apache.hudi.common.model.HoodieRecordPayload;
+import org.apache.hudi.common.model.RewriteAvroPayload;
+import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.SchemaTestUtil;
+import org.apache.hudi.common.util.collection.Pair;
+import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.SchemaCompatibilityException;
 
+import org.apache.avro.AvroRuntimeException;
+import org.apache.avro.Conversions;
 import org.apache.avro.JsonProperties;
+import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericDatumReader;
+import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
-import org.junit.jupiter.api.Test;
+import org.apache.avro.io.BinaryDecoder;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.DecoderFactory;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.avro.util.Utf8;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.sql.Date;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static org.apache.hudi.avro.AvroSchemaUtils.resolveNullableSchema;
 import static org.apache.hudi.avro.HoodieAvroUtils.getNestedFieldSchemaFromWriteSchema;
+import static org.apache.hudi.avro.HoodieAvroUtils.sanitizeName;
+import static org.apache.hudi.avro.HoodieAvroUtils.unwrapAvroValueWrapper;
+import static org.apache.hudi.avro.HoodieAvroUtils.wrapValueIntoAvro;
+import static org.apache.hudi.common.util.StringUtils.getUTF8Bytes;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -51,7 +103,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class TestHoodieAvroUtils {
 
-  private static String EVOLVED_SCHEMA = "{\"type\": \"record\",\"name\": \"testrec1\",\"fields\": [ "
+  private static final Logger LOG = LoggerFactory.getLogger(TestHoodieAvroUtils.class);
+
+  private static final String EVOLVED_SCHEMA = "{\"type\": \"record\",\"name\": \"testrec1\",\"fields\": [ "
       + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
       + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
       + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"},"
@@ -60,14 +114,20 @@ public class TestHoodieAvroUtils {
       + "{\"name\": \"new_col_nullable_default_null\", \"type\": [\"null\" ,\"string\"],\"default\": null},"
       + "{\"name\": \"new_col_nullable_default_dummy_val\", \"type\": [\"string\" ,\"null\"],\"default\": \"dummy_val\"}]}";
 
-  private static String EXAMPLE_SCHEMA = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
+  private static final String EXAMPLE_SCHEMA = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
       + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
       + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
       + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"}]}";
 
-  private static int NUM_FIELDS_IN_EXAMPLE_SCHEMA = 4;
+  private static final String EXAMPLE_SCHEMA_WITH_PROPS = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
+      + "{\"name\": \"timestamp\",\"type\": \"double\", \"custom_field_property\":\"value\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
+      + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
+      + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"}], "
+      + "\"custom_schema_property\": \"custom_schema_property_value\"}";
 
-  private static String SCHEMA_WITH_METADATA_FIELD = "{\"type\": \"record\",\"name\": \"testrec2\",\"fields\": [ "
+  private static final int NUM_FIELDS_IN_EXAMPLE_SCHEMA = 4;
+
+  private static final String SCHEMA_WITH_METADATA_FIELD = "{\"type\": \"record\",\"name\": \"testrec2\",\"fields\": [ "
       + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
       + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
       + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"},"
@@ -75,7 +135,8 @@ public class TestHoodieAvroUtils {
       + "{\"name\": \"nullable_field\",\"type\": [\"null\" ,\"string\"],\"default\": null},"
       + "{\"name\": \"nullable_field_wo_default\",\"type\": [\"null\" ,\"string\"]}]}";
 
-  private static String SCHEMA_WITH_NON_NULLABLE_FIELD = "{\"type\": \"record\",\"name\": \"testrec3\",\"fields\": [ "
+  private static final String SCHEMA_WITH_NON_NULLABLE_FIELD =
+      "{\"type\": \"record\",\"name\": \"testrec3\",\"fields\": [ "
       + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
       + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
       + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"},"
@@ -83,29 +144,85 @@ public class TestHoodieAvroUtils {
       + "{\"name\": \"non_nullable_field_wo_default\",\"type\": \"string\"},"
       + "{\"name\": \"non_nullable_field_with_default\",\"type\": \"string\", \"default\": \"dummy\"}]}";
 
-  private static String SCHEMA_WITH_NON_NULLABLE_FIELD_WITH_DEFAULT = "{\"type\": \"record\",\"name\": \"testrec4\",\"fields\": [ "
+  private static final String SCHEMA_WITH_NON_NULLABLE_FIELD_WITH_DEFAULT =
+      "{\"type\": \"record\",\"name\": \"testrec4\",\"fields\": [ "
       + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
       + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
       + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"},"
       + "{\"name\": \"nullable_field\",\"type\": [\"null\" ,\"string\"],\"default\": null},"
       + "{\"name\": \"non_nullable_field_with_default\",\"type\": \"string\", \"default\": \"dummy\"}]}";
 
-  private static String SCHEMA_WITH_DECIMAL_FIELD = "{\"type\":\"record\",\"name\":\"record\",\"fields\":["
+  private static final String SCHEMA_WITH_DECIMAL_FIELD = "{\"type\":\"record\",\"name\":\"record\",\"fields\":["
       + "{\"name\":\"key_col\",\"type\":[\"null\",\"int\"],\"default\":null},"
       + "{\"name\":\"decimal_col\",\"type\":[\"null\","
       + "{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":8,\"scale\":4}],\"default\":null}]}";
 
-  private static String SCHEMA_WITH_NESTED_FIELD = "{\"name\":\"MyClass\",\"type\":\"record\",\"namespace\":\"com.acme.avro\",\"fields\":["
+  public static String SCHEMA_WITH_NESTED_FIELD_STR = "{\"name\":\"MyClass\",\"type\":\"record\",\"namespace\":\"com.acme.avro\",\"fields\":["
       + "{\"name\":\"firstname\",\"type\":\"string\"},"
       + "{\"name\":\"lastname\",\"type\":\"string\"},"
       + "{\"name\":\"student\",\"type\":{\"name\":\"student\",\"type\":\"record\",\"fields\":["
       + "{\"name\":\"firstname\",\"type\":[\"null\" ,\"string\"],\"default\": null},{\"name\":\"lastname\",\"type\":[\"null\" ,\"string\"],\"default\": null}]}}]}";
 
-  private static String SCHEMA_WITH_NESTED_FIELD_RENAMED = "{\"name\":\"MyClass\",\"type\":\"record\",\"namespace\":\"com.acme.avro\",\"fields\":["
+  private static final String SCHEMA_WITH_NESTED_FIELD_RENAMED =
+      "{\"name\":\"MyClass\",\"type\":\"record\",\"namespace\":\"com.acme.avro\",\"fields\":["
       + "{\"name\":\"fn\",\"type\":\"string\"},"
       + "{\"name\":\"ln\",\"type\":\"string\"},"
       + "{\"name\":\"ss\",\"type\":{\"name\":\"ss\",\"type\":\"record\",\"fields\":["
       + "{\"name\":\"fn\",\"type\":[\"null\" ,\"string\"],\"default\": null},{\"name\":\"ln\",\"type\":[\"null\" ,\"string\"],\"default\": null}]}}]}";
+
+  public static final String SCHEMA_WITH_AVRO_TYPES_STR = "{\"name\":\"TestRecordAvroTypes\",\"type\":\"record\",\"fields\":["
+      // Primitive types
+      + "{\"name\":\"booleanField\",\"type\":\"boolean\"},"
+      + "{\"name\":\"intField\",\"type\":\"int\"},"
+      + "{\"name\":\"longField\",\"type\":\"long\"},"
+      + "{\"name\":\"floatField\",\"type\":\"float\"},"
+      + "{\"name\":\"doubleField\",\"type\":\"double\"},"
+      + "{\"name\":\"bytesField\",\"type\":\"bytes\"},"
+      + "{\"name\":\"stringField\",\"type\":\"string\"},"
+      // Logical types
+      + "{\"name\":\"decimalField\",\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":20,\"scale\":5},"
+      + "{\"name\":\"timeMillisField\",\"type\":\"int\",\"logicalType\":\"time-millis\"},"
+      + "{\"name\":\"timeMicrosField\",\"type\":\"long\",\"logicalType\":\"time-micros\"},"
+      + "{\"name\":\"timestampMillisField\",\"type\":\"long\",\"logicalType\":\"timestamp-millis\"},"
+      + "{\"name\":\"timestampMicrosField\",\"type\":\"long\",\"logicalType\":\"timestamp-micros\"},"
+      + "{\"name\":\"localTimestampMillisField\",\"type\":\"long\",\"logicalType\":\"local-timestamp-millis\"},"
+      + "{\"name\":\"localTimestampMicrosField\",\"type\":\"long\",\"logicalType\":\"local-timestamp-micros\"}"
+      + "]}";
+
+  private static final Schema SCHEMA_WITH_NESTED_FIELD = new Schema.Parser().parse(SCHEMA_WITH_NESTED_FIELD_STR);
+  private static final Schema SCHEMA_WITH_AVRO_TYPES = new Schema.Parser().parse(SCHEMA_WITH_AVRO_TYPES_STR);
+
+  // Define schema with a nested field containing a union type
+  private static final String NESTED_SCHEMA_WITH_UNION = "{\n"
+      + "  \"type\": \"record\",\n"
+      + "  \"name\": \"NestedRecordWithUnion\",\n"
+      + "  \"fields\": [\n"
+      + "    {\n"
+      + "      \"name\": \"student\",\n"
+      + "      \"type\": [\n"
+      + "        \"null\",\n"
+      + "        {\n"
+      + "          \"type\": \"record\",\n"
+      + "          \"name\": \"Student\",\n"
+      + "          \"fields\": [\n"
+      + "            {\"name\": \"firstname\", \"type\": [\"null\", \"string\"], \"default\": null},\n"
+      + "            {\"name\": \"lastname\", \"type\": [\"null\", \"string\"], \"default\": null}\n"
+      + "          ]\n"
+      + "        }\n"
+      + "      ],\n"
+      + "      \"default\": null\n"
+      + "    }\n"
+      + "  ]\n"
+      + "}";
+
+  public static String SCHEMA_WITH_NESTED_FIELD_LARGE_STR = "{\"name\":\"MyClass\",\"type\":\"record\",\"namespace\":\"com.acme.avro\",\"fields\":["
+      + "{\"name\":\"firstname\",\"type\":\"string\"},"
+      + "{\"name\":\"lastname\",\"type\":\"string\"},"
+      + "{\"name\":\"nested_field\",\"type\":" + SCHEMA_WITH_AVRO_TYPES_STR + "},"
+      + "{\"name\":\"student\",\"type\":{\"name\":\"student\",\"type\":\"record\",\"fields\":["
+      + "{\"name\":\"firstname\",\"type\":[\"null\" ,\"string\"],\"default\": null},{\"name\":\"lastname\",\"type\":[\"null\" ,\"string\"],\"default\": null}]}}]}";
+
+  public static Schema SCHEMA_WITH_NESTED_FIELD_LARGE = new Schema.Parser().parse(SCHEMA_WITH_NESTED_FIELD_LARGE_STR);
 
   @Test
   public void testPropsPresent() {
@@ -132,7 +249,7 @@ public class TestHoodieAvroUtils {
 
   @Test
   public void testDefaultValue() {
-    GenericRecord rec = new GenericData.Record(new Schema.Parser().parse(EVOLVED_SCHEMA));
+    GenericRecord rec = new GenericData.Record(new Schema.Parser().parse(EXAMPLE_SCHEMA));
     rec.put("_row_key", "key1");
     rec.put("non_pii_col", "val1");
     rec.put("pii_col", "val2");
@@ -242,27 +359,32 @@ public class TestHoodieAvroUtils {
     // partitioned table test.
     String schemaStr = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
         + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
-        + "{\"name\": \"non_pii_col\", \"type\": \"string\"}]},";
+        + "{\"name\": \"non_pii_col\", \"type\": \"string\"}]}";
     Schema expectedSchema = new Schema.Parser().parse(schemaStr);
     GenericRecord rec = new GenericData.Record(new Schema.Parser().parse(EXAMPLE_SCHEMA));
     rec.put("_row_key", "key1");
     rec.put("non_pii_col", "val1");
     rec.put("pii_col", "val2");
     rec.put("timestamp", 3.5);
-    GenericRecord rec1 = HoodieAvroUtils.removeFields(rec, Arrays.asList("pii_col"));
+    GenericRecord rec1 = HoodieAvroUtils.removeFields(rec, Collections.singleton("pii_col"));
     assertEquals("key1", rec1.get("_row_key"));
     assertEquals("val1", rec1.get("non_pii_col"));
     assertEquals(3.5, rec1.get("timestamp"));
-    assertNull(rec1.get("pii_col"));
+    if (HoodieAvroUtils.gteqAvro1_10()) {
+      GenericRecord finalRec1 = rec1;
+      assertThrows(AvroRuntimeException.class, () -> finalRec1.get("pii_col"));
+    } else {
+      assertNull(rec1.get("pii_col"));
+    }
     assertEquals(expectedSchema, rec1.getSchema());
 
     // non-partitioned table test with empty list of fields.
     schemaStr = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
         + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
         + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
-        + "{\"name\": \"pii_col\", \"type\": \"string\"}]},";
+        + "{\"name\": \"pii_col\", \"type\": \"string\"}]}";
     expectedSchema = new Schema.Parser().parse(schemaStr);
-    rec1 = HoodieAvroUtils.removeFields(rec, Arrays.asList(""));
+    rec1 = HoodieAvroUtils.removeFields(rec, Collections.singleton(""));
     assertEquals(expectedSchema, rec1.getSchema());
   }
 
@@ -287,19 +409,58 @@ public class TestHoodieAvroUtils {
     assertNull(rowKeyNotExist);
 
     // Field does not exist
-    try {
-      HoodieAvroUtils.getNestedFieldVal(rec, "fake_key", false, false);
-    } catch (Exception e) {
-      assertEquals("fake_key(Part -fake_key) field not found in record. Acceptable fields were :[timestamp, _row_key, non_pii_col, pii_col]",
-          e.getMessage());
-    }
+    assertEquals("fake_key(Part -fake_key) field not found in record. Acceptable fields were :[timestamp, _row_key, non_pii_col, pii_col]",
+        assertThrows(HoodieException.class, () ->
+            HoodieAvroUtils.getNestedFieldVal(rec, "fake_key", false, false)).getMessage());
 
-    // Field exist while value not
-    try {
-      HoodieAvroUtils.getNestedFieldVal(rec, "timestamp", false, false);
-    } catch (Exception e) {
-      assertEquals("The value of timestamp can not be null", e.getMessage());
-    }
+    // Field exists while value not
+    assertNull(HoodieAvroUtils.getNestedFieldVal(rec, "timestamp", false, false));
+  }
+
+  @Test
+  public void testGetNestedFieldValWithNestedField() {
+    Schema nestedSchema = new Schema.Parser().parse(SCHEMA_WITH_NESTED_FIELD_STR);
+    GenericRecord rec = new GenericData.Record(nestedSchema);
+
+    // test get .
+    assertEquals(". field not found in record. Acceptable fields were :[firstname, lastname, student]",
+        assertThrows(HoodieException.class, () ->
+            HoodieAvroUtils.getNestedFieldVal(rec, ".", false, false)).getMessage());
+
+    // test get fake_key
+    assertEquals("fake_key(Part -fake_key) field not found in record. Acceptable fields were :[firstname, lastname, student]",
+        assertThrows(HoodieException.class, () ->
+            HoodieAvroUtils.getNestedFieldVal(rec, "fake_key", false, false)).getMessage());
+
+    // test get student(null)
+    assertNull(HoodieAvroUtils.getNestedFieldVal(rec, "student", false, false));
+
+    // test get student
+    GenericRecord studentRecord = new GenericData.Record(rec.getSchema().getField("student").schema());
+    studentRecord.put("firstname", "person");
+    rec.put("student", studentRecord);
+    assertEquals(studentRecord, HoodieAvroUtils.getNestedFieldVal(rec, "student", false, false));
+
+    // test get student.fake_key
+    assertEquals("student.fake_key(Part -fake_key) field not found in record. Acceptable fields were :[firstname, lastname]",
+        assertThrows(HoodieException.class, () ->
+            HoodieAvroUtils.getNestedFieldVal(rec, "student.fake_key", false, false)).getMessage());
+
+    // test get student.firstname
+    assertEquals("person", HoodieAvroUtils.getNestedFieldVal(rec, "student.firstname", false, false));
+
+    // test get student.lastname(null)
+    assertNull(HoodieAvroUtils.getNestedFieldVal(rec, "student.lastname", false, false));
+
+    // test get student.firstname.fake_key
+    assertEquals("Cannot find a record at part value :firstname",
+        assertThrows(HoodieException.class, () ->
+            HoodieAvroUtils.getNestedFieldVal(rec, "student.firstname.fake_key", false, false)).getMessage());
+
+    // test get student.lastname(null).fake_key
+    assertEquals("Cannot find a record at part value :lastname",
+        assertThrows(HoodieException.class, () ->
+            HoodieAvroUtils.getNestedFieldVal(rec, "student.lastname.fake_key", false, false)).getMessage());
   }
 
   @Test
@@ -339,7 +500,7 @@ public class TestHoodieAvroUtils {
     assertEquals(-1, GenericData.get().compare(rec.get("favorite_number"), rec2.get("favorite_number"), getNestedFieldSchemaFromWriteSchema(rec.getSchema(), "favorite_number")));
 
     // test nested field schema
-    Schema nestedSchema = new Schema.Parser().parse(SCHEMA_WITH_NESTED_FIELD);
+    Schema nestedSchema = new Schema.Parser().parse(SCHEMA_WITH_NESTED_FIELD_STR);
     GenericRecord rec3 = new GenericData.Record(nestedSchema);
     rec3.put("firstname", "person1");
     rec3.put("lastname", "person2");
@@ -353,8 +514,35 @@ public class TestHoodieAvroUtils {
   }
 
   @Test
+  public void testGetNestedFieldSchemaWithUnion() {
+    Schema schema = new Schema.Parser().parse(NESTED_SCHEMA_WITH_UNION);
+    // Create a record for the schema
+    GenericRecord rec = new GenericData.Record(schema);
+    Schema studentSchema = schema.getField("student").schema().getTypes().get(1); // Resolve union schema for "student"
+    GenericRecord studentRecord = new GenericData.Record(studentSchema);
+    studentRecord.put("firstname", "John");
+    studentRecord.put("lastname", "Doe");
+    rec.put("student", studentRecord);
+
+    // Test nested field schema for "student.firstname"
+    Schema expectedFirstnameSchema = Schema.create(Schema.Type.STRING);
+    assertEquals(expectedFirstnameSchema, getNestedFieldSchemaFromWriteSchema(schema, "student.firstname"));
+
+    // Test nested field schema for "student.lastname"
+    Schema expectedLastnameSchema = Schema.create(Schema.Type.STRING);
+    assertEquals(expectedLastnameSchema, getNestedFieldSchemaFromWriteSchema(schema, "student.lastname"));
+
+    // Test nullable handling for "student" (entire field)
+    assertEquals(studentSchema, getNestedFieldSchemaFromWriteSchema(schema, "student"));
+
+    // Test exception for invalid nested field
+    Exception exception = assertThrows(HoodieException.class, () -> getNestedFieldSchemaFromWriteSchema(schema, "student.middleName"));
+    assertTrue(exception.getMessage().contains("Failed to get schema. Not a valid field name"));
+  }
+
+  @Test
   public void testReWriteAvroRecordWithNewSchema() {
-    Schema nestedSchema = new Schema.Parser().parse(SCHEMA_WITH_NESTED_FIELD);
+    Schema nestedSchema = new Schema.Parser().parse(SCHEMA_WITH_NESTED_FIELD_STR);
     GenericRecord rec3 = new GenericData.Record(nestedSchema);
     rec3.put("firstname", "person1");
     rec3.put("lastname", "person2");
@@ -379,5 +567,367 @@ public class TestHoodieAvroUtils {
     Date now = new Date(System.currentTimeMillis());
     int days = HoodieAvroUtils.fromJavaDate(now);
     assertEquals(now.toLocalDate(), HoodieAvroUtils.toJavaDate(days).toLocalDate());
+  }
+
+  @Test
+  public void testSanitizeName() {
+    assertEquals("__23456", sanitizeName("123456"));
+    assertEquals("abcdef", sanitizeName("abcdef"));
+    assertEquals("_1", sanitizeName("_1"));
+    assertEquals("a*bc", sanitizeName("a.bc", "*"));
+    assertEquals("abcdef___", sanitizeName("abcdef_."));
+    assertEquals("__ab__cd__", sanitizeName("1ab*cd?"));
+  }
+
+  @Test
+  public void testGenerateProjectionSchema() {
+    Schema originalSchema = HoodieAvroUtils.addMetadataFields(new Schema.Parser().parse(EXAMPLE_SCHEMA));
+
+    Schema schema1 = HoodieAvroUtils.generateProjectionSchema(originalSchema, Arrays.asList("_row_key", "timestamp"));
+    assertEquals(2, schema1.getFields().size());
+    List<String> fieldNames1 = schema1.getFields().stream().map(Schema.Field::name).collect(Collectors.toList());
+    assertTrue(fieldNames1.contains("_row_key"));
+    assertTrue(fieldNames1.contains("timestamp"));
+
+    assertTrue(assertThrows(HoodieException.class, () ->
+        HoodieAvroUtils.generateProjectionSchema(originalSchema, Arrays.asList("_row_key", "timestamp", "fake_field")))
+        .getMessage().contains("Field fake_field not found in log schema. Query cannot proceed!"));
+  }
+
+  @Test
+  public void testWrapAndUnwrapAvroValues() throws IOException {
+    Schema schema = new Schema.Parser().parse(SCHEMA_WITH_AVRO_TYPES_STR);
+    GenericRecord record = new GenericData.Record(schema);
+    Map<String, Class> expectedWrapperClass = new HashMap<>();
+
+    record.put("booleanField", true);
+    expectedWrapperClass.put("booleanField", BooleanWrapper.class);
+    record.put("intField", 698);
+    expectedWrapperClass.put("intField", IntWrapper.class);
+    record.put("longField", 192485030493L);
+    expectedWrapperClass.put("longField", LongWrapper.class);
+    record.put("floatField", 18.125f);
+    expectedWrapperClass.put("floatField", FloatWrapper.class);
+    record.put("doubleField", 94385932.342104);
+    expectedWrapperClass.put("doubleField", DoubleWrapper.class);
+    record.put("bytesField", ByteBuffer.wrap(new byte[] {1, 20, 0, 60, 2, 108}));
+    expectedWrapperClass.put("bytesField", BytesWrapper.class);
+    record.put("stringField", "abcdefghijk");
+    expectedWrapperClass.put("stringField", StringWrapper.class);
+    record.put("decimalField", ByteBuffer.wrap(getUTF8Bytes("9213032.4966")));
+    expectedWrapperClass.put("decimalField", BytesWrapper.class);
+    record.put("timeMillisField", 57996136);
+    expectedWrapperClass.put("timeMillisField", IntWrapper.class);
+    record.put("timeMicrosField", 57996136930L);
+    expectedWrapperClass.put("timeMicrosField", LongWrapper.class);
+    record.put("timestampMillisField", 1690828731156L);
+    expectedWrapperClass.put("timestampMillisField", LongWrapper.class);
+    record.put("timestampMicrosField", 1690828731156982L);
+    expectedWrapperClass.put("timestampMicrosField", LongWrapper.class);
+    record.put("localTimestampMillisField", 1690828731156L);
+    expectedWrapperClass.put("localTimestampMillisField", LongWrapper.class);
+    record.put("localTimestampMicrosField", 1690828731156982L);
+    expectedWrapperClass.put("localTimestampMicrosField", LongWrapper.class);
+
+    GenericDatumWriter<GenericRecord> writer = new GenericDatumWriter<>(schema);
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    BinaryEncoder encoder = EncoderFactory.get().binaryEncoder(baos, null);
+    writer.write(record, encoder);
+    encoder.flush();
+    byte[] data = baos.toByteArray();
+
+    GenericDatumReader<GenericRecord> reader = new GenericDatumReader<>(schema);
+    BinaryDecoder decoder = DecoderFactory.get().binaryDecoder(data, 0, data.length, null);
+    GenericRecord deserializedRecord = reader.read(null, decoder);
+    Map<String, Object> fieldValueMapping = deserializedRecord.getSchema().getFields().stream()
+        .collect(Collectors.toMap(
+            Schema.Field::name,
+            field -> deserializedRecord.get(field.name())
+        ));
+
+    for (String fieldName : fieldValueMapping.keySet()) {
+      Object value = fieldValueMapping.get(fieldName);
+      Object wrapperValue = wrapValueIntoAvro((Comparable) value);
+      assertTrue(expectedWrapperClass.get(fieldName).isInstance(wrapperValue));
+      if (value instanceof Utf8) {
+        assertEquals(value.toString(), ((GenericRecord) wrapperValue).get(0));
+        assertEquals(value.toString(), unwrapAvroValueWrapper(wrapperValue));
+      } else {
+        assertEquals(value, ((GenericRecord) wrapperValue).get(0));
+        assertEquals(value, unwrapAvroValueWrapper(wrapperValue));
+      }
+    }
+  }
+
+  @Test
+  public void testConvertingGenericDataCompare() {
+    Schema schema = new Schema.Parser().parse(SCHEMA_WITH_AVRO_TYPES_STR);
+    // create two records with same values
+    GenericRecord record1 = new GenericData.Record(schema);
+    record1.put("booleanField", true);
+    record1.put("intField", 698);
+    record1.put("longField", 192485030493L);
+    record1.put("floatField", 18.125f);
+    record1.put("doubleField", 94385932.342104);
+    record1.put("bytesField", new byte[] {1, 20, 0, 60, 2, 108});
+    record1.put("stringField", "abcdefghijk");
+    record1.put("decimalField", getUTF8Bytes("9213032.4966"));
+    record1.put("timeMillisField", 57996136);
+    record1.put("timeMicrosField", 57996136930L);
+    record1.put("timestampMillisField", 1690828731156L);
+    record1.put("timestampMicrosField", 1690828731156982L);
+    record1.put("localTimestampMillisField", 1690828731156L);
+    record1.put("localTimestampMicrosField", 1690828731156982L);
+
+    GenericRecord record2 = new GenericData.Record(schema);
+    record2.put("booleanField", true);
+    record2.put("intField", 698);
+    record2.put("longField", 192485030493L);
+    record2.put("floatField", 18.125f);
+    record2.put("doubleField", 94385932.342104);
+    record2.put("bytesField", new byte[] {1, 20, 0, 60, 2, 108});
+    record2.put("stringField", "abcdefghijk");
+    record2.put("decimalField", getUTF8Bytes("9213032.4966"));
+    record2.put("timeMillisField", 57996136);
+    record2.put("timeMicrosField", 57996136930L);
+    record2.put("timestampMillisField", 1690828731156L);
+    record2.put("timestampMicrosField", 1690828731156982L);
+    record2.put("localTimestampMillisField", 1690828731156L);
+    record2.put("localTimestampMicrosField", 1690828731156982L);
+
+    // get schema of each field in SCHEMA_WITH_AVRO_TYPES
+    List<Schema> fieldSchemas = schema.getFields().stream().map(Schema.Field::schema).collect(Collectors.toList());
+    // compare each field in SCHEMA_WITH_AVRO_TYPES
+    for (int i = 0; i < fieldSchemas.size(); i++) {
+      assertEquals(0, ConvertingGenericData.INSTANCE.compare(record1.get(i), record2.get(i), fieldSchemas.get(i)));
+    }
+  }
+
+  public static Stream<Arguments> javaValueParams() {
+    Object[][] data =
+        new Object[][] {
+            {new Timestamp(1690766971000L), TimestampMicrosWrapper.class},
+            {new Date(1672560000000L), DateWrapper.class},
+            {LocalDate.of(2023, 1, 1), LocalDateWrapper.class},
+            {new BigDecimal("12345678901234.2948"), DecimalWrapper.class}
+        };
+    return Stream.of(data).map(Arguments::of);
+  }
+
+  @ParameterizedTest
+  @MethodSource("javaValueParams")
+  public void testWrapAndUnwrapJavaValues(Comparable value, Class expectedWrapper) {
+    Object wrapperValue = wrapValueIntoAvro(value);
+    assertTrue(expectedWrapper.isInstance(wrapperValue));
+    if (value instanceof Timestamp) {
+      assertEquals(((Timestamp) value).getTime() * 1000L,
+          ((GenericRecord) wrapperValue).get(0));
+      assertEquals(((Timestamp) value).getTime(),
+          ((Timestamp) unwrapAvroValueWrapper(wrapperValue)).getTime());
+    } else if (value instanceof Date) {
+      assertEquals((int) ChronoUnit.DAYS.between(
+              LocalDate.ofEpochDay(0), ((Date) value).toLocalDate()),
+          ((GenericRecord) wrapperValue).get(0));
+      assertEquals(((Date)value).toString(), ((Date)unwrapAvroValueWrapper(wrapperValue)).toString());
+    } else if (value instanceof LocalDate) {
+      assertEquals((int) ChronoUnit.DAYS.between(LocalDate.ofEpochDay(0), (LocalDate) value),
+          ((GenericRecord) wrapperValue).get(0));
+      assertEquals(value, unwrapAvroValueWrapper(wrapperValue));
+    } else {
+      assertEquals("0.000000000000000",
+          ((BigDecimal) value)
+              .subtract((BigDecimal) unwrapAvroValueWrapper(wrapperValue)).toPlainString());
+    }
+  }
+
+  @Test
+  public void testAddMetadataFields() {
+    Schema baseSchema = new Schema.Parser().parse(EXAMPLE_SCHEMA_WITH_PROPS);
+    Schema schemaWithMetadata = HoodieAvroUtils.addMetadataFields(baseSchema);
+    List<Schema.Field> updatedFields = schemaWithMetadata.getFields();
+    // assert fields added in expected order
+    assertEquals(HoodieRecord.COMMIT_TIME_METADATA_FIELD, updatedFields.get(0).name());
+    assertEquals(HoodieRecord.COMMIT_SEQNO_METADATA_FIELD, updatedFields.get(1).name());
+    assertEquals(HoodieRecord.RECORD_KEY_METADATA_FIELD, updatedFields.get(2).name());
+    assertEquals(HoodieRecord.PARTITION_PATH_METADATA_FIELD, updatedFields.get(3).name());
+    assertEquals(HoodieRecord.FILENAME_METADATA_FIELD, updatedFields.get(4).name());
+    // assert original fields are copied over
+    List<Schema.Field> originalFieldsInUpdatedSchema = updatedFields.subList(5, updatedFields.size());
+    assertEquals(baseSchema.getFields(), originalFieldsInUpdatedSchema);
+    // validate properties are properly copied over
+    assertEquals("custom_schema_property_value", schemaWithMetadata.getProp("custom_schema_property"));
+    assertEquals("value", originalFieldsInUpdatedSchema.get(0).getProp("custom_field_property"));
+  }
+
+  @Test
+  void testSafeAvroToJsonStringMissingRequiredField() {
+    Schema schema = new Schema.Parser().parse(EXAMPLE_SCHEMA);
+    GenericRecord record = new GenericData.Record(schema);
+    record.put("non_pii_col", "val1");
+    record.put("pii_col", "val2");
+    record.put("timestamp", 3.5);
+    String jsonString = HoodieAvroUtils.safeAvroToJsonString(record);
+    assertEquals("{\"timestamp\": 3.5, \"_row_key\": null, \"non_pii_col\": \"val1\", \"pii_col\": \"val2\"}", jsonString);
+  }
+
+  @Test
+  void testSafeAvroToJsonStringBadDataType() {
+    Schema schema = new Schema.Parser().parse(EXAMPLE_SCHEMA);
+    GenericRecord record = new GenericData.Record(schema);
+    record.put("non_pii_col", "val1");
+    record.put("_row_key", "key");
+    record.put("pii_col", "val2");
+    record.put("timestamp", "foo");
+    String jsonString = HoodieAvroUtils.safeAvroToJsonString(record);
+    assertEquals("{\"timestamp\": \"foo\", \"_row_key\": \"key\", \"non_pii_col\": \"val1\", \"pii_col\": \"val2\"}", jsonString);
+  }
+
+  @Test
+  void testConvertBytesToFixed() {
+    Random rand = new Random();
+    //size calculated using AvroInternalSchemaConverter.computeMinBytesForPrecision
+    testConverBytesToFixedHelper(rand.nextDouble(), 13, 7, 6);
+    testConverBytesToFixedHelper(rand.nextDouble(), 4, 2, 2);
+    testConverBytesToFixedHelper(rand.nextDouble(), 32, 12, 14);
+  }
+
+  private static void testConverBytesToFixedHelper(double value, int precision, int scale, int size) {
+    BigDecimal decfield = BigDecimal.valueOf(value * Math.pow(10, precision - scale))
+        .setScale(scale, RoundingMode.HALF_UP).round(new MathContext(precision, RoundingMode.HALF_UP));
+    byte[] encodedDecimal = decfield.unscaledValue().toByteArray();
+    Schema fixedSchema = new Schema.Parser().parse("{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [{\"name\": \"decfield\", \"type\": {\"type\": \"fixed\", \"name\": \"idk\","
+        + " \"logicalType\": \"decimal\", \"precision\": " + precision + ", \"scale\": " + scale + ", \"size\": " + size + "}}]}").getFields().get(0).schema();
+    GenericData.Fixed fixed = (GenericData.Fixed) HoodieAvroUtils.convertBytesToFixed(encodedDecimal, fixedSchema);
+    BigDecimal after = new Conversions.DecimalConversion().fromFixed(fixed, fixedSchema, fixedSchema.getLogicalType());
+    assertEquals(decfield, after);
+  }
+
+  @Test
+  void testHasDecimalField() {
+    assertTrue(HoodieAvroUtils.hasDecimalField(new Schema.Parser().parse(SCHEMA_WITH_DECIMAL_FIELD)));
+    assertFalse(HoodieAvroUtils.hasDecimalField(new Schema.Parser().parse(EVOLVED_SCHEMA)));
+    assertFalse(HoodieAvroUtils.hasDecimalField(new Schema.Parser().parse(SCHEMA_WITH_NON_NULLABLE_FIELD)));
+    assertTrue(HoodieAvroUtils.hasDecimalField(HoodieTestDataGenerator.AVRO_SCHEMA));
+    assertTrue(HoodieAvroUtils.hasDecimalField(HoodieTestDataGenerator.AVRO_TRIP_ENCODED_DECIMAL_SCHEMA));
+    Schema recordWithMapAndArray = Schema.createRecord("recordWithMapAndArray", null, null, false,
+        Arrays.asList(new Schema.Field("mapfield", Schema.createMap(Schema.create(Schema.Type.INT)), null, null),
+            new Schema.Field("arrayfield", Schema.createArray(Schema.create(Schema.Type.INT)), null, null)
+        ));
+    assertFalse(HoodieAvroUtils.hasDecimalField(recordWithMapAndArray));
+    Schema recordWithDecMapAndArray = Schema.createRecord("recordWithDecMapAndArray", null, null, false,
+        Arrays.asList(new Schema.Field("mapfield",
+                Schema.createMap(LogicalTypes.decimal(10,6).addToSchema(Schema.create(Schema.Type.BYTES))), null, null),
+            new Schema.Field("arrayfield", Schema.createArray(Schema.create(Schema.Type.INT)), null, null)
+        ));
+    assertTrue(HoodieAvroUtils.hasDecimalField(recordWithDecMapAndArray));
+    Schema recordWithMapAndDecArray = Schema.createRecord("recordWithMapAndDecArray", null, null, false,
+        Arrays.asList(new Schema.Field("mapfield",
+            Schema.createMap(Schema.create(Schema.Type.INT)), null, null), new Schema.Field("arrayfield",
+            Schema.createArray(LogicalTypes.decimal(10,6).addToSchema(Schema.create(Schema.Type.BYTES))), null, null)
+        ));
+    assertTrue(HoodieAvroUtils.hasDecimalField(recordWithMapAndDecArray));
+  }
+
+  @Test
+  void testCreateFullName() {
+    String result = HoodieAvroUtils.createFullName(new ArrayDeque<>(Arrays.asList("a", "b", "c")));
+    String resultSingle = HoodieAvroUtils.createFullName(new ArrayDeque<>(Collections.singletonList("a")));
+    assertEquals("c.b.a", result);
+    assertEquals("a", resultSingle);
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  void testGetSortColumnValuesWithPartitionPathAndRecordKey(boolean suffixRecordKey) {
+    Schema schema = new Schema.Parser().parse(EXAMPLE_SCHEMA);
+    GenericRecord record = new GenericData.Record(schema);
+    record.put("non_pii_col", "val1");
+    record.put("pii_col", "val2");
+    record.put("timestamp", 3.5);
+    HoodieRecordPayload avroPayload = new RewriteAvroPayload(record);
+    HoodieAvroRecord avroRecord = new HoodieAvroRecord(new HoodieKey("record1", "partition1"), avroPayload);
+
+    String[] userSortColumns = new String[] {"non_pii_col", "timestamp"};
+    Object[] sortColumnValues = HoodieAvroUtils.getSortColumnValuesWithPartitionPathAndRecordKey(avroRecord, userSortColumns, Schema.parse(EXAMPLE_SCHEMA), suffixRecordKey, true);
+    if (suffixRecordKey) {
+      assertArrayEquals(new Object[] {"partition1", "val1", 3.5, "record1"}, sortColumnValues);
+    } else {
+      assertArrayEquals(new Object[] {"partition1", "val1", 3.5}, sortColumnValues);
+    }
+  }
+
+  @Test
+  void testHasListOrMapField() {
+    Schema nestedList = Schema.createRecord("nestedList", null, null, false, Arrays.asList(
+        new Schema.Field("intField", Schema.create(Schema.Type.INT), null, null),
+        new Schema.Field("nested", Schema.createRecord("nestedSchema", null, null, false, Collections.singletonList(
+            new Schema.Field("listField", Schema.createArray(Schema.create(Schema.Type.INT)), null, null)
+        )), null, null)
+    ));
+    Schema nestedMap = Schema.createRecord("nestedMap", null, null, false, Arrays.asList(
+        new Schema.Field("intField", Schema.create(Schema.Type.INT), null, null),
+        new Schema.Field("nested", Schema.createUnion(Schema.create(Schema.Type.NULL),
+            Schema.createRecord("nestedSchema", null, null, false,
+                Collections.singletonList(new Schema.Field("mapField", Schema.createMap(Schema.create(Schema.Type.INT)), null, null)
+                ))), null, null)
+    ));
+    assertTrue(HoodieAvroUtils.hasListOrMapField(nestedList));
+    assertTrue(HoodieAvroUtils.hasListOrMapField(nestedMap));
+    assertFalse(HoodieAvroUtils.hasListOrMapField(new Schema.Parser().parse(EXAMPLE_SCHEMA)));
+  }
+
+  @Test
+  void testHasSmallPrecisionDecimalField() {
+    assertTrue(HoodieAvroUtils.hasSmallPrecisionDecimalField(new Schema.Parser().parse(SCHEMA_WITH_DECIMAL_FIELD)));
+    assertFalse(HoodieAvroUtils.hasSmallPrecisionDecimalField(new Schema.Parser().parse(SCHEMA_WITH_AVRO_TYPES_STR)));
+    assertFalse(HoodieAvroUtils.hasSmallPrecisionDecimalField(new Schema.Parser().parse(EXAMPLE_SCHEMA)));
+  }
+
+  public static Stream<Arguments> getSchemaForFieldParams() {
+    Object[][] data =
+        new Object[][] {
+            {"booleanField", Schema.Type.BOOLEAN},
+            {"intField", Schema.Type.INT},
+            {"longField", Schema.Type.LONG},
+            {"floatField", Schema.Type.FLOAT},
+            {"bytesField", Schema.Type.BYTES},
+            {"stringField", Schema.Type.STRING},
+            {"decimalField", Schema.Type.BYTES},
+            {"timestampMillisField", Schema.Type.LONG}
+        };
+    return Stream.of(data).map(Arguments::of);
+  }
+
+  @ParameterizedTest
+  @MethodSource("getSchemaForFieldParams")
+  public void testGetSchemaForFieldSimple(String colName, Schema.Type schemaType) {
+    Pair<String, Schema.Field> actualColNameAndSchemaFile = HoodieAvroUtils.getSchemaForField(SCHEMA_WITH_AVRO_TYPES, colName);
+    assertEquals(colName, actualColNameAndSchemaFile.getKey());
+    assertEquals(schemaType, actualColNameAndSchemaFile.getValue().schema().getType());
+  }
+
+  public static Stream<Arguments> getSchemaForFieldParamsNested() {
+    Object[][] data =
+        new Object[][] {
+            {"student.firstname", Schema.Type.STRING},
+            {"student.lastname", Schema.Type.STRING},
+            {"nested_field.booleanField", Schema.Type.BOOLEAN},
+            {"nested_field.intField", Schema.Type.INT},
+            {"nested_field.longField", Schema.Type.LONG},
+            {"nested_field.floatField", Schema.Type.FLOAT},
+            {"nested_field.bytesField", Schema.Type.BYTES},
+            {"nested_field.stringField", Schema.Type.STRING},
+            {"nested_field.decimalField", Schema.Type.BYTES},
+            {"nested_field.timestampMillisField", Schema.Type.LONG}
+        };
+    return Stream.of(data).map(Arguments::of);
+  }
+
+  @ParameterizedTest
+  @MethodSource("getSchemaForFieldParamsNested")
+  public void testGetSchemaForFieldNested(String colName, Schema.Type schemaType) {
+    Pair<String, Schema.Field> actualColNameAndSchemaFile = HoodieAvroUtils.getSchemaForField(SCHEMA_WITH_NESTED_FIELD_LARGE, colName);
+    assertEquals(colName, actualColNameAndSchemaFile.getKey());
+    assertEquals(schemaType, resolveNullableSchema(actualColNameAndSchemaFile.getValue().schema()).getType());
   }
 }

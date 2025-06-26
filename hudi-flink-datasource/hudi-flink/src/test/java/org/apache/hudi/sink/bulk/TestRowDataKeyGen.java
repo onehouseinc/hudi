@@ -18,8 +18,11 @@
 
 package org.apache.hudi.sink.bulk;
 
+import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.exception.HoodieKeyException;
+import org.apache.hudi.keygen.TimestampBasedAvroKeyGenerator;
+import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 import org.apache.hudi.table.HoodieTableFactory;
 import org.apache.hudi.utils.TestConfigurations;
 
@@ -32,6 +35,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.sql.Timestamp;
+
+import static org.apache.hudi.common.config.TimestampKeyGeneratorConfig.TIMESTAMP_INPUT_DATE_FORMAT;
+import static org.apache.hudi.common.config.TimestampKeyGeneratorConfig.TIMESTAMP_OUTPUT_DATE_FORMAT;
+import static org.apache.hudi.common.config.TimestampKeyGeneratorConfig.TIMESTAMP_TYPE_FIELD;
 import static org.apache.hudi.common.util.PartitionPathEncodeUtils.DEFAULT_PARTITION_PATH;
 import static org.apache.hudi.utils.TestData.insertRow;
 import static org.hamcrest.CoreMatchers.is;
@@ -128,6 +136,18 @@ public class TestRowDataKeyGen {
     assertThat(keyGen2.getPartitionPath(rowData1), is("ts=1970010102"));
     assertThat(keyGen2.getPartitionPath(rowData2), is("ts=1970010100"));
     assertThat(keyGen2.getPartitionPath(rowData3), is("ts=1970010100"));
+
+    // TimestampType.DATE_STRING case, we use another string type `partition` column instead of `ts`
+    conf = TestConfigurations.getDefaultConf("path1");
+    conf.setString(FlinkOptions.PARTITION_PATH_FIELD, "partition");
+    conf.setString(HoodieWriteConfig.KEYGENERATOR_CLASS_NAME.key(), TimestampBasedAvroKeyGenerator.class.getName());
+    conf.setString(TIMESTAMP_TYPE_FIELD.key(), TimestampBasedAvroKeyGenerator.TimestampType.DATE_STRING.name());
+    conf.setString(TIMESTAMP_INPUT_DATE_FORMAT.key(), "yyyy-MM-dd HH:mm:ss");
+    conf.setString(TIMESTAMP_OUTPUT_DATE_FORMAT.key(), "yyyy-MM-dd");
+    final RowData rowData4 = insertRow(StringData.fromString("id1"), StringData.fromString("Danny"), 23,
+        TimestampData.fromEpochMillis(7200000), StringData.fromString("2004-02-29 01:02:03"));
+    final RowDataKeyGen keyGen3 = RowDataKeyGen.instance(conf, TestConfigurations.ROW_TYPE);
+    assertThat(keyGen3.getPartitionPath(rowData4), is("2004-02-29"));
   }
 
   @ParameterizedTest
@@ -165,4 +185,46 @@ public class TestRowDataKeyGen {
     assertThat(keyGen2.getPartitionPath(rowData2), is("dt=" + expectedPartition2));
     assertThat(keyGen2.getPartitionPath(rowData3), is("dt=" + expectedPartition3));
   }
+
+  @Test
+  void testPrimaryKeylessWrite() {
+    Configuration conf = TestConfigurations.getDefaultConf("path1");
+    conf.setString(FlinkOptions.RECORD_KEY_FIELD, "");
+    final RowData rowData1 = insertRow(StringData.fromString("id1"), StringData.fromString("Danny"), 23,
+        TimestampData.fromEpochMillis(1), StringData.fromString("par1"));
+    final int taskId = 3;
+    final String instantTime = "000001";
+    final RowDataKeyGen keyGen1 = RowDataKeyGens.instance(conf, TestConfigurations.ROW_TYPE, taskId, instantTime);
+    assertThat(keyGen1.getRecordKey(rowData1), is(instantTime + "_" + taskId + "_0"));
+
+    // null record key and partition path
+    final RowData rowData2 = insertRow(TestConfigurations.ROW_TYPE, null, StringData.fromString("Danny"), 23,
+        TimestampData.fromEpochMillis(1), null);
+    assertThat(keyGen1.getRecordKey(rowData2), is(instantTime + "_" + taskId + "_1"));
+
+    // empty record key and partition path
+    final RowData rowData3 = insertRow(StringData.fromString(""), StringData.fromString("Danny"), 23,
+        TimestampData.fromEpochMillis(1), StringData.fromString(""));
+    assertThat(keyGen1.getRecordKey(rowData3), is(instantTime + "_" + taskId + "_2"));
+  }
+
+  @Test
+  void testRecordKeyContainsTimestamp() {
+    Configuration conf = TestConfigurations.getDefaultConf("path1");
+    conf.setString(FlinkOptions.RECORD_KEY_FIELD, "uuid,ts");
+    conf.setString(KeyGeneratorOptions.KEYGENERATOR_CONSISTENT_LOGICAL_TIMESTAMP_ENABLED.key(), "true");
+    Timestamp ts = new Timestamp(1675841687000L);
+    final RowData rowData1 = insertRow(StringData.fromString("id1"), StringData.fromString("Danny"), 23,
+        TimestampData.fromTimestamp(ts), StringData.fromString("par1"));
+    final RowDataKeyGen keyGen1 = RowDataKeyGen.instance(conf, TestConfigurations.ROW_TYPE);
+
+    assertThat(keyGen1.getRecordKey(rowData1), is("uuid:id1,ts:" + ts.toLocalDateTime().toString()));
+
+    conf.setString(KeyGeneratorOptions.KEYGENERATOR_CONSISTENT_LOGICAL_TIMESTAMP_ENABLED.key(), "false");
+    final RowDataKeyGen keyGen2 = RowDataKeyGen.instance(conf, TestConfigurations.ROW_TYPE);
+
+    assertThat(keyGen2.getRecordKey(rowData1), is("uuid:id1,ts:1675841687000"));
+
+  }
+
 }

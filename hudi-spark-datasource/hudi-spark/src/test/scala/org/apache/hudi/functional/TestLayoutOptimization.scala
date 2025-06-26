@@ -18,26 +18,26 @@
 
 package org.apache.hudi.functional
 
+import org.apache.hudi.{DataSourceReadOptions, DataSourceWriteOptions}
 import org.apache.hudi.HoodieFileIndex.DataSkippingFailureMode
 import org.apache.hudi.common.config.HoodieMetadataConfig
-import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.common.table.timeline.{HoodieInstant, HoodieTimeline}
 import org.apache.hudi.common.testutils.RawTripTestPayload.recordsToStrings
 import org.apache.hudi.config.{HoodieClusteringConfig, HoodieWriteConfig}
-import org.apache.hudi.testutils.HoodieClientTestBase
-import org.apache.hudi.{DataSourceReadOptions, DataSourceWriteOptions, HoodieFileIndex}
+import org.apache.hudi.testutils.HoodieSparkClientTestBase
+
 import org.apache.spark.sql._
 import org.apache.spark.sql.types._
-import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.{AfterEach, BeforeEach, Tag}
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.params.ParameterizedTest
-import org.junit.jupiter.params.provider.Arguments.arguments
 import org.junit.jupiter.params.provider.{Arguments, MethodSource}
+import org.junit.jupiter.params.provider.Arguments.arguments
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
-@Tag("functional")
-class TestLayoutOptimization extends HoodieClientTestBase {
+@Tag("functional-c")
+class TestLayoutOptimization extends HoodieSparkClientTestBase {
   var spark: SparkSession = _
 
   val sourceTableSchema =
@@ -72,7 +72,7 @@ class TestLayoutOptimization extends HoodieClientTestBase {
     initSparkContexts()
     spark = sqlContext.sparkSession
     initTestDataGenerator()
-    initFileSystem()
+    initHoodieStorage()
   }
 
   @AfterEach
@@ -85,6 +85,7 @@ class TestLayoutOptimization extends HoodieClientTestBase {
   @ParameterizedTest
   @MethodSource(Array("testLayoutOptimizationParameters"))
   def testLayoutOptimizationFunctional(tableType: String,
+                                       clusteringAsRow: String,
                                        layoutOptimizationStrategy: String,
                                        spatialCurveCompositionStrategy: String): Unit = {
     val curveCompositionStrategy =
@@ -93,7 +94,7 @@ class TestLayoutOptimization extends HoodieClientTestBase {
 
     val targetRecordsCount = 10000
     // Bulk Insert Operation
-    val records = recordsToStrings(dataGen.generateInserts("001", targetRecordsCount)).toList
+    val records = recordsToStrings(dataGen.generateInserts("001", targetRecordsCount)).asScala.toList
     val writeDf: Dataset[Row] = spark.read.json(spark.sparkContext.parallelize(records, 2))
 
     // If there are any failures in the Data Skipping flow, test should fail
@@ -110,19 +111,15 @@ class TestLayoutOptimization extends HoodieClientTestBase {
       .option("hoodie.clustering.inline.max.commits", "1")
       .option("hoodie.clustering.plan.strategy.target.file.max.bytes", "1073741824")
       .option("hoodie.clustering.plan.strategy.small.file.limit", "629145600")
-      .option("hoodie.clustering.plan.strategy.max.bytes.per.group", Long.MaxValue.toString)
-      .option("hoodie.clustering.plan.strategy.target.file.max.bytes", String.valueOf(64 * 1024 * 1024L))
+      .option("hoodie.clustering.plan.strategy.max.bytes.per.group", "2147483648")
+      .option(DataSourceWriteOptions.ENABLE_ROW_WRITER.key(), clusteringAsRow)
       .option(HoodieClusteringConfig.LAYOUT_OPTIMIZE_STRATEGY.key(), layoutOptimizationStrategy)
       .option(HoodieClusteringConfig.LAYOUT_OPTIMIZE_SPATIAL_CURVE_BUILD_METHOD.key(), curveCompositionStrategy)
       .option(HoodieClusteringConfig.PLAN_STRATEGY_SORT_COLUMNS.key, "begin_lat,begin_lon")
       .mode(SaveMode.Overwrite)
       .save(basePath)
 
-    val hudiMetaClient = HoodieTableMetaClient.builder
-      .setConf(hadoopConf)
-      .setBasePath(basePath)
-      .setLoadActiveTimelineOnLoad(true)
-      .build
+    val hudiMetaClient = createMetaClient(basePath)
 
     val lastCommit = hudiMetaClient.getActiveTimeline.getAllCommitsTimeline.lastInstant().get()
 
@@ -164,18 +161,29 @@ class TestLayoutOptimization extends HoodieClientTestBase {
 
 object TestLayoutOptimization {
   def testLayoutOptimizationParameters(): java.util.stream.Stream[Arguments] = {
+    // TableType, enableClusteringAsRow, layoutOptimizationStrategy, spatialCurveCompositionStrategy
     java.util.stream.Stream.of(
-      arguments("COPY_ON_WRITE", "linear", null),
-      arguments("COPY_ON_WRITE", "z-order", "direct"),
-      arguments("COPY_ON_WRITE", "z-order", "sample"),
-      arguments("COPY_ON_WRITE", "hilbert", "direct"),
-      arguments("COPY_ON_WRITE", "hilbert", "sample"),
+      arguments("COPY_ON_WRITE", "true", "linear", null),
+      arguments("COPY_ON_WRITE", "true", "z-order", "direct"),
+      arguments("COPY_ON_WRITE", "true", "z-order", "sample"),
+      arguments("COPY_ON_WRITE", "true", "hilbert", "direct"),
+      arguments("COPY_ON_WRITE", "true", "hilbert", "sample"),
+      arguments("COPY_ON_WRITE", "false", "linear", null),
+      arguments("COPY_ON_WRITE", "false", "z-order", "direct"),
+      arguments("COPY_ON_WRITE", "false", "z-order", "sample"),
+      arguments("COPY_ON_WRITE", "false", "hilbert", "direct"),
+      arguments("COPY_ON_WRITE", "false", "hilbert", "sample"),
 
-      arguments("MERGE_ON_READ", "linear", null),
-      arguments("MERGE_ON_READ", "z-order", "direct"),
-      arguments("MERGE_ON_READ", "z-order", "sample"),
-      arguments("MERGE_ON_READ", "hilbert", "direct"),
-      arguments("MERGE_ON_READ", "hilbert", "sample")
+      arguments("MERGE_ON_READ", "true", "linear", null),
+      arguments("MERGE_ON_READ", "true", "z-order", "direct"),
+      arguments("MERGE_ON_READ", "true", "z-order", "sample"),
+      arguments("MERGE_ON_READ", "true", "hilbert", "direct"),
+      arguments("MERGE_ON_READ", "true", "hilbert", "sample"),
+      arguments("MERGE_ON_READ", "false", "linear", null),
+      arguments("MERGE_ON_READ", "false", "z-order", "direct"),
+      arguments("MERGE_ON_READ", "false", "z-order", "sample"),
+      arguments("MERGE_ON_READ", "false", "hilbert", "direct"),
+      arguments("MERGE_ON_READ", "false", "hilbert", "sample")
     )
   }
 }

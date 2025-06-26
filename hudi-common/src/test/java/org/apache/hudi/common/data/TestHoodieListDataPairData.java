@@ -22,6 +22,7 @@ package org.apache.hudi.common.data;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.ImmutablePair;
 import org.apache.hudi.common.util.collection.Pair;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -30,6 +31,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -41,7 +43,11 @@ import java.util.stream.StreamSupport;
 import static org.apache.hudi.common.util.CollectionUtils.createImmutableList;
 import static org.apache.hudi.common.util.CollectionUtils.createImmutableMap;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * Tests {@link HoodieListPairData}.
+ */
 public class TestHoodieListDataPairData {
 
   private static final String KEY1 = "key1";
@@ -80,7 +86,7 @@ public class TestHoodieListDataPairData {
   @Test
   public void testValues() {
     assertHoodieDataEquals(Arrays.asList(
-        STRING_VALUE1, STRING_VALUE2, STRING_VALUE3, STRING_VALUE4, STRING_VALUE5, STRING_VALUE6),
+            STRING_VALUE1, STRING_VALUE2, STRING_VALUE3, STRING_VALUE4, STRING_VALUE5, STRING_VALUE6),
         testHoodiePairData.values());
   }
 
@@ -103,7 +109,7 @@ public class TestHoodieListDataPairData {
   @Test
   public void testMap() {
     assertHoodieDataEquals(Arrays.asList(
-        "key1,value1", "key1,value2", "key2,value3", "key2,value4", "key3,value5", "key4,value6"),
+            "key1,value1", "key1,value2", "key2,value3", "key2,value4", "key3,value5", "key4,value6"),
         testHoodiePairData.map(pair -> pair.getKey() + "," + pair.getValue()));
   }
 
@@ -143,6 +149,50 @@ public class TestHoodieListDataPairData {
   public void testReduceByKey(Map<Integer, List<Integer>> expected, Map<Integer, List<Integer>> original) {
     HoodiePairData<Integer, Integer> reduced = HoodieListPairData.lazy(original).reduceByKey((a, b) -> a, 1);
     assertEquals(expected, toMap(reduced));
+  }
+
+  @Test
+  void testReduceByKeyWithCloseableInput() {
+    List<CloseValidationIterator<Pair<Integer, Integer>>> createdIterators = new ArrayList<>();
+    HoodiePairData<Integer, Integer> data = HoodieListData.lazy(Arrays.asList(1, 1, 1))
+        .flatMapToPair(key -> {
+          CloseValidationIterator<Pair<Integer, Integer>> iter = new CloseValidationIterator<>(Collections.singletonList(Pair.of(key, 1)).iterator());
+          createdIterators.add(iter);
+          return iter;
+        });
+    List<Pair<Integer, Integer>> result = data.reduceByKey(Integer::sum, 1).collectAsList();
+    assertEquals(Collections.singletonList(Pair.of(1, 3)), result);
+    createdIterators.forEach(iter -> assertTrue(iter.isClosed()));
+  }
+
+  @Test
+  void testLeftOuterJoinWithCloseableInput() {
+    List<CloseValidationIterator<Pair<Integer, Integer>>> createdIterators = new ArrayList<>();
+    HoodiePairData<Integer, Integer> dataToJoin = HoodieListData.lazy(Arrays.asList(1, 2, 3))
+        .flatMapToPair(key -> {
+          CloseValidationIterator<Pair<Integer, Integer>> iter = new CloseValidationIterator<>(Collections.singletonList(Pair.of(key, 1)).iterator());
+          createdIterators.add(iter);
+          return iter;
+        });
+    HoodiePairData<Integer, Integer> data = HoodieListPairData.lazy(Arrays.asList(Pair.of(1, 1), Pair.of(4, 2)));
+    List<Pair<Integer, Pair<Integer, Option<Integer>>>> result = data.leftOuterJoin(dataToJoin).collectAsList();
+    assertEquals(2, result.size());
+    createdIterators.forEach(iter -> assertTrue(iter.isClosed()));
+  }
+
+  @Test
+  void testJoinWithCloseableInput() {
+    List<CloseValidationIterator<Pair<Integer, Integer>>> createdIterators = new ArrayList<>();
+    HoodiePairData<Integer, Integer> dataToJoin = HoodieListData.lazy(Arrays.asList(1, 2, 3))
+        .flatMapToPair(key -> {
+          CloseValidationIterator<Pair<Integer, Integer>> iter = new CloseValidationIterator<>(Collections.singletonList(Pair.of(key, 1)).iterator());
+          createdIterators.add(iter);
+          return iter;
+        });
+    HoodiePairData<Integer, Integer> data = HoodieListPairData.lazy(Arrays.asList(Pair.of(1, 1), Pair.of(4, 2)));
+    List<Pair<Integer, Pair<Integer, Integer>>> result = data.join(dataToJoin).collectAsList();
+    assertEquals(1, result.size());
+    createdIterators.forEach(iter -> assertTrue(iter.isClosed()));
   }
 
   @Test
@@ -218,6 +268,40 @@ public class TestHoodieListDataPairData {
     // we still can dereference its parent (multiple times)
     assertEquals(3, originalListData.count());
     assertEquals(sourceList, originalListData.collectAsList());
+  }
+
+  @Test
+  public void testJoin() {
+    // Prepare test data
+    List<Pair<String, String>> leftData = Arrays.asList(
+        Pair.of("a", "value1"),
+        Pair.of("b", "value2"),
+        Pair.of("c", "value3")
+    );
+
+    List<Pair<String, String>> rightData = Arrays.asList(
+        Pair.of("a", "rValue1"),
+        Pair.of("a", "rValue2"),
+        Pair.of("b", "rValue3"),
+        Pair.of("d", "rValue4")
+    );
+
+    HoodiePairData<String, String> left = new HoodieListPairData<>(leftData.stream(), true);
+    HoodiePairData<String, String> right = new HoodieListPairData<>(rightData.stream(), true);
+
+    // Execute the join
+    HoodiePairData<String, Pair<String, String>> joined = left.join(right);
+
+    // Validate the result
+    List<Pair<String, Pair<String, String>>> expected = Arrays.asList(
+        Pair.of("a", Pair.of("value1", "rValue1")),
+        Pair.of("a", Pair.of("value1", "rValue2")),
+        Pair.of("b", Pair.of("value2", "rValue3"))
+    );
+
+    List<Pair<String, Pair<String, String>>> result = joined.collectAsList();
+
+    assertEquals(expected, result, "Join result does not match expected output");
   }
 
   private static List<Pair<String, String>> constructPairs() {

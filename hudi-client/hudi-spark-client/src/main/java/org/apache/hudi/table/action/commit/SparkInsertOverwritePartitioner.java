@@ -19,12 +19,10 @@
 package org.apache.hudi.table.action.commit;
 
 import org.apache.hudi.common.engine.HoodieEngineContext;
+import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.WorkloadProfile;
-
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 
 import java.util.Collections;
 import java.util.List;
@@ -34,16 +32,20 @@ import java.util.List;
  */
 public class SparkInsertOverwritePartitioner extends UpsertPartitioner {
 
-  private static final Logger LOG = LogManager.getLogger(SparkInsertOverwritePartitioner.class);
-
   public SparkInsertOverwritePartitioner(WorkloadProfile profile, HoodieEngineContext context, HoodieTable table,
-                                         HoodieWriteConfig config) {
-    super(profile, context, table, config);
+                                         HoodieWriteConfig config, WriteOperationType operationType) {
+    super(profile, context, table, config, operationType);
+  }
+
+  @Override
+  public SparkBucketInfoGetter getSparkBucketInfoGetter() {
+    return new InsertOverwriteBucketInfoGetter(bucketInfoMap);
   }
 
   /**
    * Returns a list of small files in the given partition path.
    */
+  @Override
   protected List<SmallFile> getSmallFiles(String partitionPath) {
     // for overwrite, we ignore all existing files. So do not consider any file to be smallFiles
     return Collections.emptyList();

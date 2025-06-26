@@ -20,13 +20,11 @@
 package org.apache.hudi.client.clustering.plan.strategy;
 
 import org.apache.hudi.avro.model.HoodieClusteringGroup;
-import org.apache.hudi.client.common.HoodieSparkEngineContext;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.model.FileSlice;
-import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieWriteConfig;
-import org.apache.hudi.table.HoodieSparkCopyOnWriteTable;
-import org.apache.hudi.table.HoodieSparkMergeOnReadTable;
+import org.apache.hudi.table.HoodieTable;
 
 import java.util.Collections;
 import java.util.List;
@@ -37,25 +35,21 @@ import java.util.stream.Stream;
  * In this strategy, clustering group for each partition is built in the same way as {@link SparkSizeBasedClusteringPlanStrategy}.
  * The difference is that the output groups is 1 and file group id remains the same.
  */
-public class SparkSingleFileSortPlanStrategy<T extends HoodieRecordPayload<T>>
+public class SparkSingleFileSortPlanStrategy<T>
     extends SparkSizeBasedClusteringPlanStrategy<T> {
 
-  public SparkSingleFileSortPlanStrategy(HoodieSparkCopyOnWriteTable<T> table, HoodieSparkEngineContext engineContext, HoodieWriteConfig writeConfig) {
-    super(table, engineContext, writeConfig);
-  }
-
-  public SparkSingleFileSortPlanStrategy(HoodieSparkMergeOnReadTable<T> table, HoodieSparkEngineContext engineContext, HoodieWriteConfig writeConfig) {
+  public SparkSingleFileSortPlanStrategy(HoodieTable table, HoodieEngineContext engineContext, HoodieWriteConfig writeConfig) {
     super(table, engineContext, writeConfig);
   }
 
   @Override
-  protected Stream<HoodieClusteringGroup> buildClusteringGroupsForPartition(String partitionPath, List<FileSlice> fileSlices) {
+  protected Pair<Stream<HoodieClusteringGroup>, Boolean> buildClusteringGroupsForPartition(String partitionPath, List<FileSlice> fileSlices) {
     List<Pair<List<FileSlice>, Integer>> fileSliceGroups = fileSlices.stream()
         .map(fileSlice -> Pair.of(Collections.singletonList(fileSlice), 1)).collect(Collectors.toList());
-    return fileSliceGroups.stream().map(fileSliceGroup -> HoodieClusteringGroup.newBuilder()
+    return Pair.of(fileSliceGroups.stream().map(fileSliceGroup -> HoodieClusteringGroup.newBuilder()
         .setSlices(getFileSliceInfo(fileSliceGroup.getLeft()))
         .setNumOutputFileGroups(fileSliceGroup.getRight())
         .setMetrics(buildMetrics(fileSliceGroup.getLeft()))
-        .build());
+        .build()), true);
   }
 }

@@ -21,7 +21,11 @@ package org.apache.hudi.common.model;
 import org.apache.hudi.ApiMaturityLevel;
 import org.apache.hudi.PublicAPIClass;
 import org.apache.hudi.PublicAPIMethod;
+import org.apache.hudi.common.config.HoodieConfig;
+import org.apache.hudi.common.config.RecordMergeMode;
+import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.StringUtils;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.IndexedRecord;
@@ -30,6 +34,8 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.Map;
 import java.util.Properties;
+
+import static org.apache.hudi.common.table.HoodieTableConfig.PAYLOAD_CLASS_NAME;
 
 /**
  * Every Hoodie table has an implementation of the <code>HoodieRecordPayload</code> This abstracts out callbacks which depend on record specific logic.
@@ -56,6 +62,20 @@ public interface HoodieRecordPayload<T extends HoodieRecordPayload> extends Seri
   @PublicAPIMethod(maturity = ApiMaturityLevel.STABLE)
   default T preCombine(T oldValue, Properties properties) {
     return preCombine(oldValue);
+  }
+
+  /**
+   * When more than one HoodieRecord have the same HoodieKey in the incoming batch, this function combines them before attempting to insert/upsert by taking in a schema.
+   * Implementation can leverage the schema to decide their business logic to do preCombine.
+   *
+   * @param oldValue   instance of the old {@link HoodieRecordPayload} to be combined with.
+   * @param schema     Payload related schema. For example use schema to overwrite old instance for specified fields that doesn't equal to default value.
+   * @param properties Payload related properties. For example pass the ordering field(s) name to extract from value in storage.
+   * @return the combined value
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  default T preCombine(T oldValue, Schema schema, Properties properties) {
+    return preCombine(oldValue, properties);
   }
 
   /**
@@ -125,5 +145,40 @@ public interface HoodieRecordPayload<T extends HoodieRecordPayload> extends Seri
   default Comparable<?> getOrderingValue() {
     // default natural order
     return 0;
+  }
+
+  static String getAvroPayloadForMergeMode(RecordMergeMode mergeMode, String payloadClassName) {
+    switch (mergeMode) {
+      //TODO: After we have merge mode working for writing, we should have a dummy payload that will throw exception when used
+      case EVENT_TIME_ORDERING:
+        if (!StringUtils.isNullOrEmpty(payloadClassName)
+            && payloadClassName.contains(EventTimeAvroPayload.class.getName())) {
+          return EventTimeAvroPayload.class.getName();
+        }
+        return DefaultHoodieRecordPayload.class.getName();
+      case COMMIT_TIME_ORDERING:
+        return OverwriteWithLatestAvroPayload.class.getName();
+      case CUSTOM:
+      default:
+        return payloadClassName;
+    }
+  }
+
+  static String getPayloadClassName(HoodieConfig config) {
+    return getPayloadClassName(config.getProps());
+  }
+
+  static String getPayloadClassName(Properties props) {
+    String payloadClassName;
+    if (props.containsKey(PAYLOAD_CLASS_NAME.key())) {
+      payloadClassName = props.getProperty(PAYLOAD_CLASS_NAME.key());
+    } else if (props.containsKey("hoodie.datasource.write.payload.class")) {
+      payloadClassName = props.getProperty("hoodie.datasource.write.payload.class");
+    } else {
+      return HoodieTableConfig.DEFAULT_PAYLOAD_CLASS_NAME;
+    }
+    // There could be tables written with payload class from com.uber.hoodie.
+    // Need to transparently change to org.apache.hudi.
+    return payloadClassName.replace("com.uber.hoodie", "org.apache.hudi");
   }
 }

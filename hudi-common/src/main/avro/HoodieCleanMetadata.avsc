@@ -23,6 +23,7 @@
      {"name": "timeTakenInMillis", "type": "long"},
      {"name": "totalFilesDeleted", "type": "int"},
      {"name": "earliestCommitToRetain", "type": "string"},
+     {"name": "lastCompletedCommitTimestamp", "type": "string", "default" : ""},
      {"name": "partitionMetadata", "type": {
         "type" : "map", "values" : "HoodieCleanPartitionMetadata"
       }
@@ -40,6 +41,15 @@
           "default" : null
         }],
         "default" : null
-     }
+     },
+   {
+      "name":"extraMetadata",
+      "type":["null", {
+         "type":"map",
+         "values":"string",
+         "default": null
+      }],
+      "default": null
+   }
  ]
 }

@@ -43,6 +43,11 @@
       "default" : null
     },
     {
+      "name": "lastCompletedCommitTimestamp",
+      "type": "string",
+      "default" : ""
+    },
+    {
       "name": "policy",
       "type": "string"
     },
@@ -100,6 +105,15 @@
       { "type":"array", "items":"string"}
       ],
       "default": null
-    }
+    },
+   {
+      "name":"extraMetadata",
+      "type":["null", {
+         "type":"map",
+         "values":"string",
+         "default": null
+      }],
+      "default": null
+   }
   ]
 }

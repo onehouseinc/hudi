@@ -18,22 +18,26 @@
 
 package org.apache.hudi.common.engine;
 
-import org.apache.hadoop.conf.Configuration;
-
-import org.apache.hudi.common.config.SerializableConfiguration;
 import org.apache.hudi.common.data.HoodieAccumulator;
 import org.apache.hudi.common.data.HoodieAtomicLongAccumulator;
 import org.apache.hudi.common.data.HoodieData;
+import org.apache.hudi.common.data.HoodieData.HoodieDataCacheKey;
 import org.apache.hudi.common.data.HoodieListData;
+import org.apache.hudi.common.data.HoodieListPairData;
+import org.apache.hudi.common.data.HoodiePairData;
 import org.apache.hudi.common.function.SerializableBiFunction;
 import org.apache.hudi.common.function.SerializableConsumer;
 import org.apache.hudi.common.function.SerializableFunction;
 import org.apache.hudi.common.function.SerializablePairFlatMapFunction;
 import org.apache.hudi.common.function.SerializablePairFunction;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.common.util.Functions;
 import org.apache.hudi.common.util.Option;
-
 import org.apache.hudi.common.util.collection.ImmutablePair;
 import org.apache.hudi.common.util.collection.Pair;
+import org.apache.hudi.storage.StorageConfiguration;
+
+import org.apache.avro.generic.IndexedRecord;
 
 import java.util.Collections;
 import java.util.Iterator;
@@ -56,12 +60,12 @@ import static org.apache.hudi.common.function.FunctionWrapper.throwingReduceWrap
  */
 public final class HoodieLocalEngineContext extends HoodieEngineContext {
 
-  public HoodieLocalEngineContext(Configuration conf) {
+  public HoodieLocalEngineContext(StorageConfiguration<?> conf) {
     this(conf, new LocalTaskContextSupplier());
   }
 
-  public HoodieLocalEngineContext(Configuration conf, TaskContextSupplier taskContextSupplier) {
-    super(new SerializableConfiguration(conf), taskContextSupplier);
+  public HoodieLocalEngineContext(StorageConfiguration<?> conf, TaskContextSupplier taskContextSupplier) {
+    super(conf, taskContextSupplier);
   }
 
   @Override
@@ -72,6 +76,11 @@ public final class HoodieLocalEngineContext extends HoodieEngineContext {
   @Override
   public <T> HoodieData<T> emptyHoodieData() {
     return HoodieListData.eager(Collections.emptyList());
+  }
+
+  @Override
+  public <K, V> HoodiePairData<K, V> emptyHoodiePairData() {
+    return HoodieListPairData.eager(Collections.emptyList());
   }
 
   @Override
@@ -144,5 +153,40 @@ public final class HoodieLocalEngineContext extends HoodieEngineContext {
   @Override
   public void setJobStatus(String activeModule, String activityDescription) {
     // no operation for now
+  }
+
+  @Override
+  public void putCachedDataIds(HoodieDataCacheKey cacheKey, int... ids) {
+    // no operation for now
+  }
+
+  @Override
+  public List<Integer> getCachedDataIds(HoodieDataCacheKey cacheKey) {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public List<Integer> removeCachedDataIds(HoodieDataCacheKey cacheKey) {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public void cancelJob(String jobId) {
+    // no operation for now
+  }
+
+  @Override
+  public void cancelAllJobs() {
+    // no operation for now
+  }
+
+  @Override
+  public <I, O> O aggregate(HoodieData<I> data, O zeroValue, Functions.Function2<O, I, O> seqOp, Functions.Function2<O, O, O> combOp) {
+    return data.collectAsList().stream().reduce(zeroValue, seqOp::apply, combOp::apply);
+  }
+
+  @Override
+  public ReaderContextFactory<IndexedRecord> getReaderContextFactory(HoodieTableMetaClient metaClient) {
+    return new AvroReaderContextFactory(metaClient);
   }
 }
