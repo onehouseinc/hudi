@@ -1192,3 +1192,7 @@ f5824e51ca7 [ENG-28779][INTERNAL] Add parallelism configs to AwsGlueSync (#1428)
 
 --- [2026-03-23 05:31:32] [release-v1.218.0] ---
 [AUDIT-1071]: Changelog for release-v1.217.0 (#1774)
+
+--- [2026-03-26 16:26:23] [release-v1.219.0] ---
+[ENG-33182][CHERRYPICK] Make columnar merge handles (parquet rewriter) default in product (#1783)
+[AUDIT-2260]: Changelog for release-v1.218.0 (#1780)
